@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     run_created_at: datetime
     results_dir: Path = Path("/results")
     bench_hostname: str | None = None
+    ec2_ami_id: str | None = None
+    ec2_instance_type: str | None = None
+    aws_region: str | None = None
 
     pg_host: str | None = None
     pg_port: int = 5432
@@ -109,6 +112,9 @@ class Run(BaseModel):
     workers = peewee.IntegerField()
     python_server = peewee.CharField()
     hostname = peewee.CharField(null=True)
+    ec2_ami_id = peewee.CharField(null=True)
+    ec2_instance_type = peewee.CharField(null=True)
+    aws_region = peewee.CharField(null=True)
 
     class Meta:
         table_name = "runs"
@@ -372,6 +378,9 @@ def main() -> None:
             "workers": settings.workers,
             "python_server": settings.python_server,
             "hostname": settings.bench_hostname,
+            "ec2_ami_id": settings.ec2_ami_id,
+            "ec2_instance_type": settings.ec2_instance_type,
+            "aws_region": settings.aws_region,
         },
     )
 

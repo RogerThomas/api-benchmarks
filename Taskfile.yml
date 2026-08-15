@@ -27,7 +27,7 @@ tasks:
       - uv run yeet ./bench.py {{.CLI_ARGS}}
 
   export-results:
-    desc: 'Print the comparison tables for a run: task export-results -- <run-id>, or no arg to pick from the 36 most recent.'
+    desc: 'Print the comparison tables for a run (and write a full report + chart to reports/<run-id>.md): task export-results -- <run-id>, or no arg to pick from the 36 most recent.'
     cmd: uv run yeet ./export_results.py {{.CLI_ARGS}}
 
   tail-logs:

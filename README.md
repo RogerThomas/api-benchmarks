@@ -30,8 +30,10 @@ k6 runner) plus that framework's own `compose.<fw>.yml`, waits for the runner to
 every test, tears the pair back down, then moves to the next framework. Every
 framework's results land in `results/bench.db` (SQLite) tagged with the shared RUN_ID —
 that's what ties a multi-framework run together. At the end, `bench.py` hands off to
-`export_results.py` to print the comparison tables; re-run it standalone any time with
-a past RUN_ID via `task export-results`.
+`export_results.py` to print the comparison tables and write a full report — tables, a
+chart SVG, exact run config (VUs/duration/AMI/region if run on EC2), and the methodology
+— to `reports/<run_id>.md`; re-run it standalone any time with a past RUN_ID via
+`task export-results`.
 
 All knobs are CLI flags only (no env-var fallback) — run `uv run yeet ./bench.py --help`
 for the full list.
@@ -257,6 +259,9 @@ loadtest/                  # k6 + orchestration image (one framework per contain
   pyproject.toml           #   in-container deps (peewee)
 results/
   bench.db                 # SQLite: every run's every attempt (git-ignored)
+reports/
+  <run_id>.md               # full report: tables, chart, exact run config, methodology
+  <run_id>.svg               # the chart embedded in that report
 ```
 
 ## Adding a Python framework

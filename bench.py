@@ -79,6 +79,13 @@ def main(
         str,
         Opt(help="Reuse an existing RUN_ID (e.g. to backfill a framework into a past run)"),
     ] = "",
+    ec2_ami_id: Annotated[
+        str, Opt(help="EC2 AMI id this ran on (informational, set by ec2_launch.py)")
+    ] = "",
+    ec2_instance_type: Annotated[
+        str, Opt(help="EC2 instance type this ran on (informational)")
+    ] = "",
+    aws_region: Annotated[str, Opt(help="AWS region this ran in (informational)")] = "",
 ) -> None:
     fw_list = frameworks.split()
     unknown = [fw for fw in fw_list if fw not in get_args(Framework.__value__)]
@@ -108,6 +115,9 @@ def main(
         "WORKERS": str(workers),
         "PYTHON_SERVER": python_server,
         "BENCH_HOSTNAME": socket.gethostname(),
+        "EC2_AMI_ID": ec2_ami_id,
+        "EC2_INSTANCE_TYPE": ec2_instance_type,
+        "AWS_REGION": aws_region,
         "PG_HOST": backend.pg_host or "",
         "PG_PORT": str(backend.pg_port),
         "PG_DB": backend.pg_db or "",

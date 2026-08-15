@@ -77,6 +77,11 @@ services:
       PYTHON_SERVER: ${PYTHON_SERVER:-granian}
       TESTS: ${TESTS:-test1 test2 test3 test4}
       BENCH_HOSTNAME: ${BENCH_HOSTNAME:-}
+      # Informational only (not needed to run a bench) -- set by ec2_launch.py
+      # so a report generated from this run can say exactly what it ran on.
+      EC2_AMI_ID: ${EC2_AMI_ID:-}
+      EC2_INSTANCE_TYPE: ${EC2_INSTANCE_TYPE:-}
+      AWS_REGION: ${AWS_REGION:-}
       # Results backend: bench.py reads these from .env and forwards them
       # here. Postgres (e.g. Neon) if PG_HOST is set, else SQLite — see
       # loadtest/run.py's Settings.build_database().

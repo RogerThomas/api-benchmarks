@@ -110,7 +110,11 @@ def main(*, duration: str = "60s", vus: int = 128, frameworks: str = "", run_id:
         raise SystemExit(1)
 
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    bench_args = f"--duration {duration} --vus {vus} --run-id {run_id}"
+    bench_args = (
+        f"--duration {duration} --vus {vus} --run-id {run_id} "
+        f"--ec2-ami-id {settings.ec2_ami_id} --ec2-instance-type {settings.ec2_instance_type} "
+        f"--aws-region {settings.aws_region}"
+    )
     if frameworks:
         bench_args += f' --frameworks "{frameworks}"'
 

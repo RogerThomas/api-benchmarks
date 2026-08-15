@@ -5,12 +5,17 @@ req/s descending, with "vs" columns normalized against jero (the fleet's
 baseline) — same shape the old table.awk produced, now reading
 results/bench.db instead of a report-<ts>.json file.
 
+Also writes a full markdown report (comparison tables + a chart SVG + the
+methodology and exact run config a future agent would need to reproduce or
+extend these numbers) to reports/<run_id>.md.
+
     task export-results -- 20260813T120000
     uv run yeet ./export_results.py 20260813T120000
     task export-results                     # no run-id: pick from the 36 most recent
 """
 
 import sys
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
 
@@ -83,6 +88,9 @@ class Run(BaseModel):
     workers = peewee.IntegerField()
     python_server = peewee.CharField()
     hostname = peewee.CharField(null=True)
+    ec2_ami_id = peewee.CharField(null=True)
+    ec2_instance_type = peewee.CharField(null=True)
+    aws_region = peewee.CharField(null=True)
 
     class Meta:
         table_name = "runs"
@@ -158,33 +166,33 @@ def _row(cells: list[str], widths: list[int]) -> str:
     return V + V.join(f" {c:<{w}} " for c, w in zip(cells, widths, strict=True)) + V
 
 
+def _result_cells(r: Result, jero: Result | None) -> list[str]:
+    """One row's cells, matching COLUMNS — shared by the terminal ASCII table
+    and the markdown report table so the vs-jero math lives in one place."""
+    vs_rps = f"x{r.reqs_per_sec / jero.reqs_per_sec:.2f}" if jero and jero.reqs_per_sec else "-"
+    vs_mean = f"x{jero.latency_avg_ms / r.latency_avg_ms:.2f}" if jero and r.latency_avg_ms else "-"
+    vs_p99 = f"x{jero.latency_p99_ms / r.latency_p99_ms:.2f}" if jero and r.latency_p99_ms else "-"
+    return [
+        r.framework,
+        _fmt_rps(r.reqs_per_sec),
+        vs_rps,
+        f"{r.latency_avg_ms:.2f}ms",
+        vs_mean,
+        f"{r.latency_p99_ms:.2f}ms",
+        vs_p99,
+        f"{(1 - r.failed_rate) * 100:.2f}",
+        f"{r.peak_rss_mb or 0:.0f}M",
+        f"{r.avg_rss_mb or 0:.0f}M",
+        f"{r.avg_cpu_pct or 0:.0f}%",
+        f"{r.peak_cpu_pct or 0:.0f}%",
+        r.cpu_spark or "",
+        r.mem_spark or "",
+    ]
+
+
 def _render_table(test: str, results: list[Result]) -> list[str]:
     jero = next((r for r in results if r.framework == "jero"), None)
-    grid = [COLUMNS]
-    for r in results:
-        vs_rps = f"x{r.reqs_per_sec / jero.reqs_per_sec:.2f}" if jero and jero.reqs_per_sec else "-"
-        vs_mean = (
-            f"x{jero.latency_avg_ms / r.latency_avg_ms:.2f}" if jero and r.latency_avg_ms else "-"
-        )
-        vs_p99 = (
-            f"x{jero.latency_p99_ms / r.latency_p99_ms:.2f}" if jero and r.latency_p99_ms else "-"
-        )
-        grid.append([
-            r.framework,
-            _fmt_rps(r.reqs_per_sec),
-            vs_rps,
-            f"{r.latency_avg_ms:.2f}ms",
-            vs_mean,
-            f"{r.latency_p99_ms:.2f}ms",
-            vs_p99,
-            f"{(1 - r.failed_rate) * 100:.2f}",
-            f"{r.peak_rss_mb or 0:.0f}M",
-            f"{r.avg_rss_mb or 0:.0f}M",
-            f"{r.avg_cpu_pct or 0:.0f}%",
-            f"{r.peak_cpu_pct or 0:.0f}%",
-            r.cpu_spark or "",
-            r.mem_spark or "",
-        ])
+    grid = [COLUMNS, *(_result_cells(r, jero) for r in results)]
 
     widths = []
     for c in range(len(COLUMNS)):
@@ -201,6 +209,350 @@ def _render_table(test: str, results: list[Result]) -> list[str]:
     lines.append(_rule(BL, BM, BR, widths))
 
     return [TEST_LABELS.get(test, test), *lines]
+
+
+def _render_markdown_table(test: str, results: list[Result]) -> list[str]:
+    """Same cells and vs-jero math as _render_table, wrapped as a GFM table
+    instead of box-drawing art."""
+    jero = next((r for r in results if r.framework == "jero"), None)
+    header = f"| {' | '.join(COLUMNS)} |"
+    separator = f"| {' | '.join('---' for _ in COLUMNS)} |"
+    rows = [f"| {' | '.join(_result_cells(r, jero))} |" for r in results]
+    return [f"### {TEST_LABELS.get(test, test)}", "", header, separator, *rows]
+
+
+# Per-test chart headline + a short "what this measures" caption, matching
+# the visual language of jero's own bench-grid.svg.
+TEST_HEADLINES: dict[str, tuple[str, str]] = {
+    "test1": ("JSON — GET /info", "the pure framework path"),
+    "test2": ("JWT — POST /movies", "validates the body, decodes a bearer token"),
+    "test3": ("Proxy — GET /catalog", "one outbound hop to the upstream service"),
+    "test4": ("Database — GET /users/me", "bound by the DB driver"),
+}
+
+# Static reference facts (from README "Frameworks & servers" / "Equal work,
+# per test") -- used to render a per-report table filtered to just the
+# frameworks that were actually part of this run.
+FRAMEWORK_FACTS: dict[str, dict[str, str]] = {
+    "jero": {
+        "language": "Python 3.13",
+        "server": "granian ASGI",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "msgspec Struct",
+        "parses_upstream": "typed (msgspec)",
+        "serializer": "msgspec",
+    },
+    "fastapi": {
+        "language": "Python 3.13",
+        "server": "granian ASGI",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "pydantic",
+        "parses_upstream": "typed (pydantic) + response-model re-validate",
+        "serializer": "pydantic",
+    },
+    "litestar": {
+        "language": "Python 3.13",
+        "server": "granian ASGI",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "msgspec Struct",
+        "parses_upstream": "typed (msgspec)",
+        "serializer": "msgspec",
+    },
+    "blacksheep": {
+        "language": "Python 3.13",
+        "server": "granian ASGI",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "dataclass bind",
+        "parses_upstream": "passthrough dict",
+        "serializer": "orjson",
+    },
+    "robyn": {
+        "language": "Python 3.13",
+        "server": "built-in Rust server",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "pydantic (native param)",
+        "parses_upstream": "typed (pydantic)",
+        "serializer": "stdlib json / pydantic",
+    },
+    "flask": {
+        "language": "Python 3.13",
+        "server": "granian WSGI",
+        "http_client": "pyreqwest (sync)",
+        "db_driver": "psycopg",
+        "validates_body": "pydantic",
+        "parses_upstream": "typed (pydantic)",
+        "serializer": "stdlib json",
+    },
+    "django-ninja": {
+        "language": "Python 3.13",
+        "server": "granian ASGI",
+        "http_client": "pyreqwest",
+        "db_driver": "psycopg (Django ORM)",
+        "validates_body": "pydantic (Schema)",
+        "parses_upstream": "passthrough bytes",
+        "serializer": "pydantic",
+    },
+    "django-bolt": {
+        "language": "Python 3.13",
+        "server": "built-in Rust server",
+        "http_client": "pyreqwest",
+        "db_driver": "psycopg (Django ORM)",
+        "validates_body": "msgspec Struct",
+        "parses_upstream": "passthrough bytes",
+        "serializer": "msgspec",
+    },
+    "gin": {
+        "language": "Go",
+        "server": "net/http (GOMAXPROCS=1)",
+        "http_client": "net/http",
+        "db_driver": "pgx",
+        "validates_body": "ShouldBindJSON struct",
+        "parses_upstream": "typed struct",
+        "serializer": "encoding/json",
+    },
+    "elysia": {
+        "language": "Bun / TS",
+        "server": "Bun native",
+        "http_client": "fetch",
+        "db_driver": "Bun SQL",
+        "validates_body": "typebox schema",
+        "parses_upstream": "passthrough object",
+        "serializer": "Bun native",
+    },
+    "spring-boot": {
+        "language": "Java 25",
+        "server": "embedded Tomcat, virtual threads",
+        "http_client": "RestClient (Apache HttpClient5)",
+        "db_driver": "JdbcTemplate (HikariCP)",
+        "validates_body": "jakarta bean validation (record)",
+        "parses_upstream": "typed (Jackson)",
+        "serializer": "Jackson",
+    },
+}
+
+
+def _build_chart_svg(
+    tests: list[str], results_by_test: dict[str, list[Result]], svg_path: Path
+) -> None:
+    """2x2 grid, one horizontal-bar panel per test, each panel scaled to its
+    own fastest result -- jero highlighted in blue, everyone else in muted
+    gray, matching jero's own bench-grid.svg."""
+    import matplotlib as mpl
+
+    mpl.use("svg")
+    import matplotlib.pyplot as plt
+
+    bg, ink, subink, faint = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
+    hilite, other = "#2a78d6", "#a8adb3"
+
+    max_rows = max((len(v) for v in results_by_test.values()), default=1)
+    fig_height = 2.6 + 1.05 * max_rows
+    fig, axes = plt.subplots(2, 2, figsize=(12, fig_height), facecolor=bg)
+    fig.suptitle(
+        "jero-benchmarks", fontsize=16, fontweight="bold", color=ink, x=0.04, ha="left", y=0.99
+    )
+
+    for ax, test in zip(axes.flat, tests[:4], strict=False):
+        results = sorted(results_by_test.get(test, []), key=lambda r: r.reqs_per_sec, reverse=True)
+        ax.set_facecolor(bg)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if not results:
+            ax.axis("off")
+            continue
+
+        max_val = results[0].reqs_per_sec or 1.0
+        n = len(results)
+        for i, r in enumerate(results):
+            y = n - 1 - i
+            is_jero = r.framework == "jero"
+            color = hilite if is_jero else other
+            weight = "bold" if is_jero else "normal"
+            text_color = ink if is_jero else subink
+            ax.plot(
+                [0, r.reqs_per_sec], [y, y], linewidth=15, solid_capstyle="round", color=color
+            )
+            ax.text(
+                -max_val * 0.03,
+                y,
+                r.framework,
+                ha="right",
+                va="center",
+                fontsize=10.5,
+                color=text_color,
+                fontweight=weight,
+            )
+            ax.text(
+                r.reqs_per_sec + max_val * 0.03,
+                y,
+                _fmt_rps(r.reqs_per_sec),
+                ha="left",
+                va="center",
+                fontsize=10,
+                color=text_color,
+                fontweight=weight,
+            )
+        ax.set_xlim(-max_val * 0.55, max_val * 1.3)
+        ax.set_ylim(-0.7, n - 0.3)
+        title, subtitle = TEST_HEADLINES.get(test, (test, ""))
+        ax.set_title(title, loc="left", fontsize=13, fontweight="semibold", color=ink, pad=18)
+        ax.text(1.0, 1.1, subtitle, transform=ax.transAxes, ha="right", fontsize=10, color=faint)
+
+    fig.tight_layout(rect=(0.02, 0.01, 0.99, 0.94))
+    fig.savefig(svg_path, format="svg", facecolor=bg)
+    plt.close(fig)
+
+
+def _render_methodology(frameworks: list[str]) -> str:
+    fact_cols = [
+        ("Language", "language"),
+        ("Server", "server"),
+        ("HTTP client", "http_client"),
+        ("DB driver", "db_driver"),
+        ("Validates body (test 2)", "validates_body"),
+        ("Parses upstream (test 3)", "parses_upstream"),
+        ("JSON serializer", "serializer"),
+    ]
+    present = [fw for fw in frameworks if fw in FRAMEWORK_FACTS]
+    fact_table_lines = []
+    if present:
+        fact_table_lines.append(f"| Framework | {' | '.join(c[0] for c in fact_cols)} |")
+        fact_table_lines.append(f"| --- | {' | '.join('---' for _ in fact_cols)} |")
+        for fw in present:
+            facts = FRAMEWORK_FACTS[fw]
+            fact_table_lines.append(
+                f"| {fw} | {' | '.join(facts.get(key, '-') for _, key in fact_cols)} |"
+            )
+    fact_table = "\n".join(fact_table_lines)
+
+    return f"""## How these results were made
+
+**Isolation.** Exactly one framework container is ever alive at a time, alongside
+the shared Postgres/upstream/k6-runner infra -- brought up via `compose.base.yml`
+plus that framework's own `compose.<fw>.yml`, torn down before the next framework
+starts. No two frameworks ever share a core or contend for host resources.
+
+**One worker, one core.** Every service runs exactly 1 worker (granian
+`--workers 1`, Gin `GOMAXPROCS=1`, Bun's single JS thread, Bolt `--processes 1`),
+pinned to one dedicated CPU core via `cpuset` affinity -- not a CFS quota, which
+throttles a saturated container every 100ms scheduler period and adds
+tail-latency stalls; affinity confines all of a framework's threads (including
+GIL-releasing extensions like `msgspec`/`psqlpy`) to one core with no such stalls.
+
+**Equal resource budgets.** DB pool and outbound-HTTP pool are capped at **64**
+connections for every framework/language.
+
+**Best of N.** Each (framework, test) pair runs multiple attempts; the
+best-scoring attempt is kept. Score equally weights throughput and latency,
+each normalized against that test's best attempt:
+
+```
+score = reqsPerSec/maxReqs + minMean/mean + minP99/p99
+```
+
+**Resource-use columns.** `memPk`/`memAv` = peak/average resident memory (MB);
+`cpuAv`/`cpuPk` = average/peak CPU as % of one core (pinned via `cpuset`, so
+these sit ≤100%); `cpu ~`/`mem ~` = a 0-to-max-scaled sparkline of the CPU/memory
+time series during the attempt. Only the framework's own container is measured
+-- Postgres and the upstream are excluded.
+
+**Equal work, per test** -- every framework does the same task; only the
+*native* tool differs:
+
+{fact_table}
+
+**Known, intended differences** (each framework's real idiomatic behaviour, kept
+rather than normalised away): the JSON serializer column (stdlib `json` is
+slower than msgspec/orjson/native); FastAPI additionally re-validates the
+*response* against its `response_model`; Blacksheep/Elysia/Django Ninja/Django
+Bolt return the upstream payload straight through as bytes/dict; the two Django
+frameworks return snake_case field names where the rest of the Python fleet
+returns camelCase; Spring Boot's Jackson binding coerces a numeric field given
+as a JSON string rather than rejecting it like pydantic/msgspec do. These are
+visible here so a number is never mistaken for pure framework speed."""
+
+
+def _render_report(
+    run: Run,
+    tests: list[str],
+    results_by_test: dict[str, list[Result]],
+    destination: str,
+    svg_filename: str,
+) -> str:
+    frameworks = sorted({r.framework for results in results_by_test.values() for r in results})
+    lines = [
+        f"# jero-benchmarks — run `{run.run_id}`",
+        "",
+        f"_Generated {datetime.now(UTC).isoformat(timespec='seconds')}_",
+        "",
+        "## Run configuration",
+        "",
+        "| | |",
+        "| --- | --- |",
+        f"| **Run ID** | `{run.run_id}` |",
+        f"| **Created** | {run.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')} |",
+        f"| **Host** | {run.hostname or 'unknown'} |",
+        f"| **AWS region** | {run.aws_region or '-- (not run on EC2)'} |",
+        f"| **EC2 instance type** | {run.ec2_instance_type or '--'} |",
+        f"| **EC2 AMI** | {f'`{run.ec2_ami_id}`' if run.ec2_ami_id else '--'} |",
+        f"| **k6 VUs** | {run.vus} |",
+        f"| **Duration per attempt** | {run.duration} |",
+        f"| **Best of** | {run.best_of} |",
+        f"| **Server workers** | {run.workers} |",
+        f"| **Python server** | {run.python_server} |",
+        f"| **Frameworks** | {', '.join(frameworks)} |",
+        f"| **Results backend** | {destination} |",
+        "",
+        "## Results",
+        "",
+        f"![jero-benchmarks results grid]({svg_filename})",
+        "",
+    ]
+    for test in tests:
+        results = results_by_test.get(test)
+        if not results:
+            continue
+        lines += _render_markdown_table(test, results)
+        lines.append("")
+
+    lines.append(_render_methodology(frameworks))
+    lines += [
+        "",
+        "## Disclosure",
+        "",
+        (
+            "The author of this benchmark suite is also the author of "
+            "[jero](https://pypi.org/project/jero/), one of the frameworks benchmarked "
+            "here. Every measure above -- equal resource budgets, idiomatic code per "
+            "framework, isolated single-framework runs, documented intended "
+            "differences -- applies identically to jero and everyone else; nothing "
+            "here is tuned in its favor."
+        ),
+        "",
+        "---",
+        f"_Generated by `export_results.py` from `results.is_best` rows in {destination}._",
+    ]
+    return "\n".join(lines)
+
+
+def _write_report(
+    run: Run, tests: list[str], results_by_test: dict[str, list[Result]], destination: str
+) -> Path:
+    reports_dir = ROOT / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    svg_path = reports_dir / f"{run.run_id}.svg"
+    md_path = reports_dir / f"{run.run_id}.md"
+
+    _build_chart_svg(tests, results_by_test, svg_path)
+    md_path.write_text(_render_report(run, tests, results_by_test, destination, svg_path.name))
+    return md_path
 
 
 def _pick_run(destination: str) -> str:
@@ -275,6 +627,7 @@ def main(run_id: str = "") -> None:
         .distinct()
         .order_by(Result.test)
     ]
+    results_by_test: dict[str, list[Result]] = {}
     for test in tests:
         results = list(
             Result
@@ -284,6 +637,11 @@ def main(run_id: str = "") -> None:
         )
         if not results:
             continue
+        results_by_test[test] = results
         print()
         for line in _render_table(test, results):
             print(line)
+
+    if results_by_test:
+        report_path = _write_report(run, tests, results_by_test, destination)
+        print(f"\n==> wrote report to {report_path}")
