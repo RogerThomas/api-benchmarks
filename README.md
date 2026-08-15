@@ -32,8 +32,8 @@ framework's results land in `results/bench.db` (SQLite) tagged with the shared R
 that's what ties a multi-framework run together. At the end, `bench.py` hands off to
 `export_results.py` to print the comparison tables and write a full report — tables, a
 chart SVG, exact run config (VUs/duration/AMI/region if run on EC2), and the methodology
-— to `reports/<run_id>.md`; re-run it standalone any time with a past RUN_ID via
-`task export-results`.
+— plus the raw underlying results as JSON, to `reports/<run_id>/`; re-run it standalone
+any time with a past RUN_ID via `task export-results`.
 
 All knobs are CLI flags only (no env-var fallback) — run `uv run yeet ./bench.py --help`
 for the full list.
@@ -260,8 +260,10 @@ loadtest/                  # k6 + orchestration image (one framework per contain
 results/
   bench.db                 # SQLite: every run's every attempt (git-ignored)
 reports/
-  <run_id>.md               # full report: tables, chart, exact run config, methodology
-  <run_id>.svg               # the chart embedded in that report
+  <run_id>/
+    report.md               # full report: tables, chart, exact run config, methodology
+    chart.svg               # the chart embedded in that report
+    results.json             # raw Run + every Result row (all attempts, not just is_best)
 ```
 
 ## Adding a Python framework

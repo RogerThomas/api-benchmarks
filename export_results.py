@@ -7,13 +7,15 @@ results/bench.db instead of a report-<ts>.json file.
 
 Also writes a full markdown report (comparison tables + a chart SVG + the
 methodology and exact run config a future agent would need to reproduce or
-extend these numbers) to reports/<run_id>.md.
+extend these numbers), the chart SVG, and the raw underlying results as JSON,
+to reports/<run_id>/{report.md,chart.svg,results.json}.
 
     task export-results -- 20260813T120000
     uv run yeet ./export_results.py 20260813T120000
     task export-results                     # no run-id: pick from the 36 most recent
 """
 
+import json
 import sys
 from datetime import UTC, datetime
 from functools import cache
@@ -622,16 +624,75 @@ def _render_report(
     return "\n".join(lines)
 
 
+def _run_to_dict(run: Run) -> dict[str, object]:
+    return {
+        "run_id": run.run_id,
+        "created_at": run.created_at.isoformat(),
+        "hostname": run.hostname,
+        "vus": run.vus,
+        "duration": run.duration,
+        "best_of": run.best_of,
+        "workers": run.workers,
+        "python_server": run.python_server,
+        "ec2_ami_id": run.ec2_ami_id,
+        "ec2_instance_type": run.ec2_instance_type,
+        "aws_region": run.aws_region,
+    }
+
+
+def _result_to_dict(r: Result) -> dict[str, object]:
+    return {
+        "framework": r.framework,
+        "test": r.test,
+        "attempt": r.attempt,
+        "reqs_per_sec": r.reqs_per_sec,
+        "latency_avg_ms": r.latency_avg_ms,
+        "latency_p50_ms": r.latency_p50_ms,
+        "latency_p75_ms": r.latency_p75_ms,
+        "latency_p90_ms": r.latency_p90_ms,
+        "latency_p99_ms": r.latency_p99_ms,
+        "failed_rate": r.failed_rate,
+        "total_requests": r.total_requests,
+        "score": r.score,
+        "is_best": r.is_best,
+        "peak_rss_mb": r.peak_rss_mb,
+        "avg_rss_mb": r.avg_rss_mb,
+        "avg_cpu_pct": r.avg_cpu_pct,
+        "peak_cpu_pct": r.peak_cpu_pct,
+        "cpu_spark": r.cpu_spark,
+        "mem_spark": r.mem_spark,
+    }
+
+
+def _write_results_json(run: Run, json_path: Path) -> None:
+    """The raw data backing the report: every attempt of every (framework,
+    test) pair in this run -- not just the is_best winners the markdown
+    tables show -- so the best-of-N selection can be reprocessed or verified
+    independently."""
+    all_results = list(
+        Result.select()
+        .where(Result.run == run.run_id)
+        .order_by(Result.framework, Result.test, Result.attempt)
+    )
+    payload = {
+        "run": _run_to_dict(run),
+        "results": [_result_to_dict(r) for r in all_results],
+    }
+    json_path.write_text(json.dumps(payload, indent=2))
+
+
 def _write_report(
     run: Run, tests: list[str], results_by_test: dict[str, list[Result]], destination: str
 ) -> Path:
-    reports_dir = ROOT / "reports"
-    reports_dir.mkdir(exist_ok=True)
-    svg_path = reports_dir / f"{run.run_id}.svg"
-    md_path = reports_dir / f"{run.run_id}.md"
+    run_dir = ROOT / "reports" / run.run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    svg_path = run_dir / "chart.svg"
+    md_path = run_dir / "report.md"
+    json_path = run_dir / "results.json"
 
     _build_chart_svg(tests, results_by_test, svg_path)
     md_path.write_text(_render_report(run, tests, results_by_test, destination, svg_path.name))
+    _write_results_json(run, json_path)
     return md_path
 
 

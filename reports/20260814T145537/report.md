@@ -1,6 +1,6 @@
 # jero-benchmarks — run `20260814T145537`
 
-_Generated 2026-08-15T19:36:29+00:00_
+_Generated 2026-08-15T19:56:18+00:00_
 
 ## Run configuration
 
@@ -22,7 +22,7 @@ _Generated 2026-08-15T19:36:29+00:00_
 
 ## Results
 
-![jero-benchmarks results grid](20260814T145537.svg)
+![jero-benchmarks results grid](chart.svg)
 
 ### 1 - GET /info
 
