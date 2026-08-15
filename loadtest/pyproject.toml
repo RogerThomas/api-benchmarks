@@ -1,0 +1,15 @@
+[project]
+name = "jero-benchmarks-runner"
+version = "0.0.0"
+description = "In-container k6 orchestration for one framework's benchmark slice."
+requires-python = ">=3.13"
+dependencies = [
+    "peewee>=3.17",
+    "pydantic-settings>=2.0",
+    "psycopg[binary]>=3.1",
+    "yeetr>=2026.7.2.post4",
+    "plumbum>=2.0.2",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,53 @@
+# Outbound HTTP client shootout — how fast can each Python HTTP client pull the
+# upstream's static JSON on ONE core? Standalone from the framework benchmark:
+#
+#   task bench-http-clients                 # 10s/client, concurrency 64
+#   task bench-http-clients -- -d 20 -c 128 # override duration/concurrency
+#
+# `bench` is pinned to a single core (the client is the thing under test); the
+# upstream gets its own cores so it never bottlenecks. `bench` runs once, prints
+# the tables, and exits — the whole stack tears down after (see Taskfile).
+
+x-upstream-key: &upstream_key "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
+
+services:
+  upstream:
+    build: { context: ./services/upstream }
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    cpuset: "1,2"
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    environment:
+      UPSTREAM_API_KEY: *upstream_key
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 2s
+    networks: [shootout]
+
+  bench:
+    build: { context: ./services/http-clients }
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    cpuset: "0"
+    environment:
+      UPSTREAM_API_KEY: *upstream_key
+      DURATION: ${DURATION:-10}
+      CONCURRENCY: ${CONCURRENCY:-64}
+      # rich renders to a pipe here (no TTY) — widen so the tables don't wrap.
+      COLUMNS: "200"
+    depends_on:
+      upstream:
+        condition: service_healthy
+    networks: [shootout]
+
+networks:
+  shootout:
+    driver: bridge

@@ -1,0 +1,43 @@
+# Elysia (Bun) — combine with compose.base.yml (see that file for the full command).
+# `task bench` drives this automatically for every name in $FRAMEWORKS.
+
+services:
+  elysia:
+    build: { context: ./services/elysia }
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    cpuset: "0"
+    environment:
+      JWT_SECRET: "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
+      UPSTREAM_URL: http://upstream:8000
+      UPSTREAM_API_KEY: "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: bench
+      DB_USER: bench
+      DB_PASSWORD: bench
+      # Cap Bun's concurrent outbound fetches at the shared 64-connection
+      # budget (matches Python http_pool_size=64 / gin MaxConnsPerHost=64,
+      # which queue excess). Bun's fetch keeps a 64-conn keep-alive pool per
+      # host but does NOT queue overflow — it opens one-shot connections
+      # that flood TIME_WAIT and exhaust the container's ~28k ephemeral
+      # ports in seconds, collapsing test 3 under sustained load.
+      BUN_CONFIG_MAX_HTTP_REQUESTS: "64"
+    depends_on:
+      upstream: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:8000/info').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 2s
+    networks: [bench]
+
+  runner:
+    depends_on:
+      elysia: { condition: service_healthy }
+    environment:
+      FRAMEWORK: elysia

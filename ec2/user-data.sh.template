@@ -1,0 +1,35 @@
+#!/bin/bash
+# Fire-and-forget EC2 runner: pulls the code from S3, writes a fresh .env
+# (Neon results-backend creds only -- AWS auth comes from the instance's IAM
+# profile, never from here), runs `task bench`, uploads the log to S3, then
+# self-terminates. Rendered from this template by ec2_launch.py, which
+# replaces every __TOKEN__ below with a real value -- never edit those in
+# place, they're plain string substitutions, not bash variables.
+set -euo pipefail
+
+# cloud-init runs this as root, whose PATH doesn't include ec2-user's
+# per-user `uv` install (/usr/local/bin/task is already system-wide and
+# root-visible, but `task bench` internally shells out to `uv`).
+export PATH="/home/ec2-user/.local/bin:$PATH"
+
+TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
+cd /home/ec2-user
+aws s3 cp "s3://__S3_BUCKET__/code/jero-benchmarks.tar.gz" .
+tar xzf jero-benchmarks.tar.gz
+cd jero-benchmarks
+
+cat > .env <<ENVEOF
+PG_USER=__PG_USER__
+PG_PASSWORD=__PG_PASSWORD__
+PG_HOST=__PG_HOST__
+PG_DB=__PG_DB__
+UPSTREAM_API_KEY=__UPSTREAM_API_KEY__
+ENVEOF
+
+task bench -- __BENCH_ARGS__ 2>&1 | tee /var/log/jero-bench.log
+
+aws s3 cp /var/log/jero-bench.log "s3://__S3_BUCKET__/logs/${INSTANCE_ID}.log"
+
+shutdown -h now

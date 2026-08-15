@@ -1,0 +1,35 @@
+server:
+  port: ${PORT:8000}
+  # Tomcat's thread pool is left at Spring Boot's defaults (min-spare 10,
+  # max 200): unlike a process-per-worker server, one JVM thread pool is the
+  # idiomatic Spring MVC setup regardless of the shared WORKERS knob (which
+  # this framework ignores — see README), and cpuset already confines the
+  # whole pool to one core.
+
+spring:
+  threads:
+    # Spring's own recommended default on Java 21+: without this, Tomcat
+    # backs every in-flight request with its own platform (OS) thread, and
+    # ~100 of those fighting over one pinned core thrash badly — measured
+    # +76% req/s and a 3x lower p99 on test1 with this on vs off. Virtual
+    # threads let the JVM multiplex those onto a couple of carrier threads
+    # instead, which is exactly what every other framework here already
+    # does with its own event loop / goroutines.
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+    hikari:
+      # Matches the shared db_pool_size=64 budget used by every other framework.
+      maximum-pool-size: 64
+
+app:
+  jwt-secret: ${JWT_SECRET}
+  upstream-url: ${UPSTREAM_URL}
+  upstream-api-key: ${UPSTREAM_API_KEY}
+
+logging:
+  level:
+    root: WARN

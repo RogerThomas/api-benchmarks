@@ -1,0 +1,71 @@
+{
+  "title": "jero-benchmarks · docker · py:granian · 128 VUs · 30s/test · best-of-3 · 1 worker(s)",
+  "timestamp": "20260715T134809",
+  "mode": "docker",
+  "pythonServer": "granian",
+  "vus": 128,
+  "duration": "30s",
+  "workers": 1,
+  "bestOf": 3,
+  "frameworks": [
+    "elysia"
+  ],
+  "tests": [
+    "test3"
+  ],
+  "runs": [
+    {
+      "framework": "elysia",
+      "test": "test3",
+      "attempt": 3,
+      "durationSec": 30,
+      "vus": 128,
+      "totalRequests": 1403082,
+      "failedRate": 0,
+      "totalTimeSec": 30.001533333,
+      "reqsPerSec": 46767.0096866912,
+      "latencyMs": {
+        "avg": 2.664471383497812,
+        "min": 0.060334,
+        "med": 2.405459,
+        "max": 25.449167,
+        "p50": 2.405459,
+        "p75": 3.026459,
+        "p90": 3.8748289000000016,
+        "p99": 9.25454979
+      },
+      "peakRssMb": 50.2,
+      "avgRssMb": 47.8,
+      "avgCpuPct": 97.8,
+      "peakCpuPct": 99.5,
+      "cpuSpark": "████████████████",
+      "memSpark": "▆▆▇▇▇███████████",
+      "samples": 15,
+      "score": 2.996875071110293,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 46375.62107616455,
+          "mean": 2.683722408600852,
+          "p99": 9.753287499999997,
+          "score": 2.9303573626860953
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 46649.51826524742,
+          "mean": 2.6717753583314447,
+          "p99": 9.225629979999997,
+          "score": 2.9947539752393526
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 46767.0096866912,
+          "mean": 2.664471383497812,
+          "p99": 9.25454979,
+          "score": 2.996875071110293
+        }
+      ]
+    }
+  ]
+}

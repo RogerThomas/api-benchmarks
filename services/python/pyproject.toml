@@ -1,0 +1,95 @@
+[project]
+name = "jero-benchmarks-python"
+version = "0.0.0"
+description = "Python API-framework benchmark targets. One uv dependency group per framework."
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+# Not a package — just a home for per-framework dependency groups installed into
+# isolated venvs (one per Dockerfile stage).
+package = false
+
+# One group per framework. Each Dockerfile stage syncs ONLY its own group
+# (`uv sync --no-default-groups --group <fw>`) so deps never interfere.
+[dependency-groups]
+jero = [
+    "granian",
+    "uvicorn[standard]",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "uvloop",
+    "rloop",
+    "psqlpy",
+    "pydantic-settings",
+    "jero>=0.0.27",
+]
+fastapi = [
+    "fastapi",
+    "granian",
+    "uvicorn[standard]",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "uvloop",
+    "rloop",
+    "psqlpy",
+    "pydantic-settings",
+]
+litestar = [
+    "litestar",
+    "granian",
+    "uvicorn[standard]",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "uvloop",
+    "rloop",
+    "psqlpy",
+    "pydantic-settings",
+]
+flask = [
+    "flask",
+    "granian",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "psycopg[binary,pool]",
+    "pydantic-settings",
+]
+blacksheep = [
+    "blacksheep",
+    "granian",
+    "uvicorn[standard]",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "uvloop",
+    "rloop",
+    "psqlpy",
+    "pydantic-settings",
+]
+robyn = [
+    "robyn",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "psqlpy",
+    "pydantic-settings",
+]
+django-ninja = [
+    "django>=5.2",
+    "django-ninja",
+    "granian",
+    "uvicorn[standard]",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "uvloop",
+    "rloop",
+    "psycopg[binary,pool]",
+    "pydantic-settings",
+]
+django-bolt = [
+    "django>=5.2",
+    "django-bolt",
+    "msgspec",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "psycopg[binary,pool]",
+    "pydantic-settings",
+]

@@ -1,0 +1,88 @@
+version: "3"
+
+# Usage:
+#   task bench                                  # every framework, one at a time, best-of-3
+#   task bench -- --frameworks "jero fastapi"   # just these two, still one at a time
+#   task bench -- --duration 30s --vus 200      # override k6 knobs (see: uv run yeet ./bench.py --help)
+#   task export-results -- 20260813T120000      # re-print a past run's tables
+#   task export-results                         # no run-id: pick from the 36 most recent
+#
+# `task bench` (bench.py) generates one RUN_ID (the kickoff timestamp) and,
+# for each framework, brings up compose.base.yml (postgres + upstream +
+# runner) plus that framework's own compose.<fw>.yml, waits for the runner to
+# finish, tears the pair back down, then moves to the next framework — so no
+# two frameworks ever share a core or contend for host resources. Every
+# framework's results land in results/bench.db tagged with the shared
+# RUN_ID; `task export-results` reads that db back out.
+
+tasks:
+  default:
+    cmds:
+      - task: bench
+
+  bench:
+    desc: 'Bench every framework (or --frameworks "a b") one at a time; results land in results/bench.db under one RUN_ID.'
+    cmds:
+      - mkdir -p results
+      - uv run yeet ./bench.py {{.CLI_ARGS}}
+
+  export-results:
+    desc: 'Print the comparison tables for a run: task export-results -- <run-id>, or no arg to pick from the 36 most recent.'
+    cmd: uv run yeet ./export_results.py {{.CLI_ARGS}}
+
+  tail-logs:
+    desc: 'Tail the live log on a fire-and-forget EC2 runner: task tail-logs -- <instance-id>, or no arg to pick from running instances.'
+    cmd: uv run yeet ./ec2_tail_logs.py {{.CLI_ARGS}}
+
+  launch-ec2:
+    desc: 'Launch a self-terminating EC2 benchmark run, tagged with its auto-generated run-id: task launch-ec2 -- --duration 60s --vus 128 --frameworks "jero fastapi"'
+    cmd: uv run yeet ./ec2_launch.py {{.CLI_ARGS}}
+
+  down:
+    desc: Tear down any framework stack left running (safety net — `task bench` already cleans up after itself).
+    cmd: |
+      files=$(ls compose.*.yml | grep -v compose.http-clients.yml | sed 's/^/-f /' | tr '\n' ' ')
+      docker compose $files down -v
+
+  upstream-native:
+    desc: 'Run the Rust upstream natively via cargo (foreground, Ctrl-C stops). Override port: task upstream-native PORT=9000.'
+    cmd: |
+      cd services/upstream
+      echo "==> upstream on http://127.0.0.1:{{.PORT | default "6700"}} (GET /health, GET /data with bearer key)"
+      UPSTREAM_API_KEY="{{.UPSTREAM_API_KEY | default "upk_bench_9f8e7d6c5b4a32100fedcba987654321"}}" \
+      PORT="{{.PORT | default "6700"}}" cargo run --release
+
+  bench-http-clients:
+    desc: 'Outbound HTTP client shootout on one core vs the upstream. Override: task bench-http-clients -- -d 20 -c 128.'
+    cmds:
+      - defer: docker compose -f compose.http-clients.yml down -v
+      - |
+        d=$(echo "{{.CLI_ARGS}}" | sed -n 's/.*-d[= ]\{0,1\}\([0-9]*\).*/\1/p'); d=${d:-10}
+        c=$(echo "{{.CLI_ARGS}}" | sed -n 's/.*-c[= ]\{0,1\}\([0-9]*\).*/\1/p'); c=${c:-64}
+        echo "==> HTTP client shootout: ${d}s per client, concurrency ${c}"
+        DURATION="${d}" CONCURRENCY="${c}" \
+          docker compose -f compose.http-clients.yml up --build \
+            --abort-on-container-exit --exit-code-from bench
+
+  clean:
+    desc: Remove the results database (all history, every run).
+    cmd: rm -f results/bench.db
+
+  format:
+    desc: Format all Python code with ruff.
+    cmd: uv run --group dev ruff format .
+
+  lint:
+    desc: Lint (and autofix) all Python code with ruff.
+    cmd: uv run --group dev ruff check .
+
+  typecheck:
+    desc: Type-check all Python code with pyright.
+    cmd: uv run --group dev pyright
+
+  check:
+    desc: format + lint + typecheck, in that order.
+    cmds:
+      - task: format
+      - task: lint
+      - task: typecheck

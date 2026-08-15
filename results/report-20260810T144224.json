@@ -1,0 +1,446 @@
+{
+  "title": "jero-benchmarks · docker · py:granian · 100 VUs · 10s/test · best-of-3 · 1 worker(s)",
+  "timestamp": "20260810T144224",
+  "mode": "docker",
+  "pythonServer": "granian",
+  "vus": 100,
+  "duration": "10s",
+  "workers": 1,
+  "bestOf": 3,
+  "frameworks": [
+    "jero",
+    "fastapi"
+  ],
+  "tests": [
+    "test1",
+    "test2",
+    "test3",
+    "test4"
+  ],
+  "runs": [
+    {
+      "framework": "fastapi",
+      "test": "test1",
+      "attempt": 3,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 270354,
+      "failedRate": 0,
+      "totalTimeSec": 10.003260672,
+      "reqsPerSec": 27026.587516283013,
+      "latencyMs": {
+        "avg": 3.6764347987046917,
+        "min": 0.077917,
+        "med": 3.6912915,
+        "max": 16.465167,
+        "p50": 3.6912915,
+        "p75": 4.558542,
+        "p90": 5.454042,
+        "p99": 8.68035274
+      },
+      "peakRssMb": 81.1,
+      "avgRssMb": 81.0,
+      "avgCpuPct": 100.6,
+      "peakCpuPct": 100.7,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 26784.280595270066,
+          "mean": 3.7089293570010033,
+          "p99": 9.358858399999997,
+          "score": 2.9097745654408205
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 26607.87882422186,
+          "mean": 3.7359019641827724,
+          "p99": 9.39777152,
+          "score": 2.892250528516009
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 27026.587516283013,
+          "mean": 3.6764347987046917,
+          "p99": 8.68035274,
+          "score": 3
+        }
+      ]
+    },
+    {
+      "framework": "fastapi",
+      "test": "test2",
+      "attempt": 3,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 90943,
+      "failedRate": 0,
+      "totalTimeSec": 10.018535463000001,
+      "reqsPerSec": 9077.474480762838,
+      "latencyMs": {
+        "avg": 10.974587230759871,
+        "min": 3.047125,
+        "med": 10.652291,
+        "max": 29.786875,
+        "p50": 10.652291,
+        "p75": 11.776625,
+        "p90": 13.2366586,
+        "p99": 21.594752359999998
+      },
+      "peakRssMb": 83.1,
+      "avgRssMb": 82.8,
+      "avgCpuPct": 101.6,
+      "peakCpuPct": 101.8,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 2.997005989474229,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 9092.166903442625,
+          "mean": 10.959463507543715,
+          "p99": 21.964291,
+          "score": 2.983175480601673
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 9087.734069972159,
+          "mean": 10.964476873927957,
+          "p99": 21.870878799999996,
+          "score": 2.9864299170544637
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 9077.474480762838,
+          "mean": 10.974587230759871,
+          "p99": 21.594752359999998,
+          "score": 2.997005989474229
+        }
+      ]
+    },
+    {
+      "framework": "fastapi",
+      "test": "test3",
+      "attempt": 1,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 140499,
+      "failedRate": 0,
+      "totalTimeSec": 10.007033532,
+      "reqsPerSec": 14040.024903556005,
+      "latencyMs": {
+        "avg": 7.093900835109157,
+        "min": 0.329834,
+        "med": 6.966208,
+        "max": 37.252333,
+        "p50": 6.966208,
+        "p75": 8.092,
+        "p90": 9.4118422,
+        "p99": 17.796723139999997
+      },
+      "peakRssMb": 101.6,
+      "avgRssMb": 101.4,
+      "avgCpuPct": 101.3,
+      "peakCpuPct": 101.5,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 14040.024903556005,
+          "mean": 7.093900835109157,
+          "p99": 17.796723139999997,
+          "score": 3
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 13731.693331664734,
+          "mean": 7.250332950127713,
+          "p99": 18.027458,
+          "score": 2.9436641691370884
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 13818.184972089015,
+          "mean": 7.206188593185762,
+          "p99": 18.496902,
+          "score": 2.930763489479285
+        }
+      ]
+    },
+    {
+      "framework": "fastapi",
+      "test": "test4",
+      "attempt": 2,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 69027,
+      "failedRate": 0,
+      "totalTimeSec": 10.008467505,
+      "reqsPerSec": 6896.860080278594,
+      "latencyMs": {
+        "avg": 14.457498758442373,
+        "min": 6.46025,
+        "med": 14.056,
+        "max": 40.036083,
+        "p50": 14.056,
+        "p75": 15.189833,
+        "p90": 16.5426582,
+        "p99": 26.5155495
+      },
+      "peakRssMb": 100.0,
+      "avgRssMb": 99.7,
+      "avgCpuPct": 100.9,
+      "peakCpuPct": 101.0,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 6803.000471302708,
+          "mean": 14.655495781170664,
+          "p99": 27.063126719999993,
+          "score": 2.952647546492787
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 6896.860080278594,
+          "mean": 14.457498758442373,
+          "p99": 26.5155495,
+          "score": 3
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 6723.006451311496,
+          "mean": 14.831289865489488,
+          "p99": 29.3133504,
+          "score": 2.854144881938818
+        }
+      ]
+    },
+    {
+      "framework": "jero",
+      "test": "test1",
+      "attempt": 3,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 569389,
+      "failedRate": 0,
+      "totalTimeSec": 10.001022171,
+      "reqsPerSec": 56933.08046562073,
+      "latencyMs": {
+        "avg": 1.7157564565999783,
+        "min": 0.034167,
+        "med": 1.455042,
+        "max": 22.307459,
+        "p50": 1.455042,
+        "p75": 1.875833,
+        "p90": 2.6086752000000004,
+        "p99": 7.116713119999989
+      },
+      "peakRssMb": 76.3,
+      "avgRssMb": 76.2,
+      "avgCpuPct": 96.4,
+      "peakCpuPct": 98.3,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 55599.87182389054,
+          "mean": 1.7576907593800704,
+          "p99": 7.157824139999999,
+          "score": 2.946981763190714
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 56261.59042103244,
+          "mean": 1.7414874334259274,
+          "p99": 7.262773919999997,
+          "score": 2.9533194554065987
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 56933.08046562073,
+          "mean": 1.7157564565999783,
+          "p99": 7.116713119999989,
+          "score": 3
+        }
+      ]
+    },
+    {
+      "framework": "jero",
+      "test": "test2",
+      "attempt": 1,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 273385,
+      "failedRate": 0,
+      "totalTimeSec": 10.003393406999999,
+      "reqsPerSec": 27329.226081291115,
+      "latencyMs": {
+        "avg": 3.626020124564116,
+        "min": 0.090583,
+        "med": 3.3965,
+        "max": 16.485625,
+        "p50": 3.3965,
+        "p75": 3.962959,
+        "p90": 4.697,
+        "p99": 9.876813719999998
+      },
+      "peakRssMb": 76.2,
+      "avgRssMb": 75.7,
+      "avgCpuPct": 100.3,
+      "peakCpuPct": 100.5,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 27329.226081291115,
+          "mean": 3.626020124564116,
+          "p99": 9.876813719999998,
+          "score": 3
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 27270.20043818963,
+          "mean": 3.630854209208987,
+          "p99": 10.293037499999999,
+          "score": 2.956071400012775
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 27230.56009445047,
+          "mean": 3.6397460012041813,
+          "p99": 10.151700239999998,
+          "score": 2.965540737985012
+        }
+      ]
+    },
+    {
+      "framework": "jero",
+      "test": "test3",
+      "attempt": 2,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 283221,
+      "failedRate": 0,
+      "totalTimeSec": 10.001280589,
+      "reqsPerSec": 28318.473567425277,
+      "latencyMs": {
+        "avg": 3.5022970387047274,
+        "min": 0.124875,
+        "med": 3.310458,
+        "max": 16.568292,
+        "p50": 3.310458,
+        "p75": 4.170334,
+        "p90": 5.1975,
+        "p99": 9.022533199999998
+      },
+      "peakRssMb": 90.8,
+      "avgRssMb": 90.7,
+      "avgCpuPct": 100.8,
+      "peakCpuPct": 101.1,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 27892.235980066635,
+          "mean": 3.553514106146155,
+          "p99": 9.55966408,
+          "score": 2.914348138063194
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 28318.473567425277,
+          "mean": 3.5022970387047274,
+          "p99": 9.022533199999998,
+          "score": 3
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 27290.48216769864,
+          "mean": 3.63368597370365,
+          "p99": 9.29270435,
+          "score": 2.8984668604848918
+        }
+      ]
+    },
+    {
+      "framework": "jero",
+      "test": "test4",
+      "attempt": 3,
+      "durationSec": 10,
+      "vus": 100,
+      "totalRequests": 129718,
+      "failedRate": 0,
+      "totalTimeSec": 10.012425047,
+      "reqsPerSec": 12955.702478778316,
+      "latencyMs": {
+        "avg": 7.680435856134028,
+        "min": 0.560417,
+        "med": 7.486708500000001,
+        "max": 23.381334,
+        "p50": 7.486708500000001,
+        "p75": 8.33970875,
+        "p90": 9.344917,
+        "p99": 13.965763749999997
+      },
+      "peakRssMb": 92.6,
+      "avgRssMb": 92.2,
+      "avgCpuPct": 100.9,
+      "peakCpuPct": 101.1,
+      "cpuSpark": "████████████████",
+      "memSpark": "████████████████",
+      "samples": 5,
+      "score": 3,
+      "bestOf": 3,
+      "attempts": [
+        {
+          "attempt": 1,
+          "reqsPerSec": 11839.728612587553,
+          "mean": 8.40428041046144,
+          "p99": 15.664203889999998,
+          "score": 2.71930614249679
+        },
+        {
+          "attempt": 2,
+          "reqsPerSec": 12597.756520456876,
+          "mean": 7.900003023634369,
+          "p99": 15.06768804,
+          "score": 2.87144663951715
+        },
+        {
+          "attempt": 3,
+          "reqsPerSec": 12955.702478778316,
+          "mean": 7.680435856134028,
+          "p99": 13.965763749999997,
+          "score": 3
+        }
+      ]
+    }
+  ]
+}

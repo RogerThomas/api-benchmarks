@@ -1,0 +1,289 @@
+#!yeet
+"""Prints the comparison tables for one `task bench` run: one box table per
+test, the best-of-N winner for each framework (Result.is_best), sorted by
+req/s descending, with "vs" columns normalized against jero (the fleet's
+baseline) — same shape the old table.awk produced, now reading
+results/bench.db instead of a report-<ts>.json file.
+
+    task export-results -- 20260813T120000
+    uv run yeet ./export_results.py 20260813T120000
+    task export-results                     # no run-id: pick from the 36 most recent
+"""
+
+import sys
+from functools import cache
+from pathlib import Path
+
+import peewee
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from rich.console import Console
+from rich.table import Table
+
+ROOT = Path(__file__).resolve().parent
+
+
+class Settings(BaseSettings):
+    """Results backend: Postgres (e.g. Neon) if PG_HOST is set in the
+    environment/.env, else SQLite at SQLITE_PATH, else the local default.
+    Same rule loadtest/run.py's Settings uses to pick a backend."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    pg_host: str | None = None
+    pg_port: int = 5432
+    pg_db: str | None = None
+    pg_user: str | None = None
+    pg_password: str | None = None
+    pg_sslmode: str = "require"
+    pg_channel_binding: str = "require"
+    sqlite_path: str | None = None
+
+
+@cache
+def _get_settings() -> Settings:
+    return Settings()
+
+
+@cache
+def _get_db() -> peewee.DatabaseProxy:
+    return peewee.DatabaseProxy()
+
+
+def _build_db(settings: Settings) -> peewee.Database:
+    if settings.pg_host:
+        return peewee.PostgresqlDatabase(
+            settings.pg_db,
+            host=settings.pg_host,
+            port=settings.pg_port,
+            user=settings.pg_user,
+            password=settings.pg_password,
+            sslmode=settings.pg_sslmode,
+            channel_binding=settings.pg_channel_binding,
+        )  # pyright: ignore[reportArgumentType] -- pg_db/user/password are only unset when pg_host is also unset
+    return peewee.SqliteDatabase(settings.sqlite_path or str(ROOT / "results" / "bench.db"))
+
+
+def _describe(settings: Settings) -> str:
+    if settings.pg_host:
+        return f"postgres://{settings.pg_host}/{settings.pg_db}"
+    return settings.sqlite_path or str(ROOT / "results" / "bench.db")
+
+
+class BaseModel(peewee.Model):
+    class Meta:
+        database = _get_db()
+
+
+class Run(BaseModel):
+    run_id = peewee.CharField(primary_key=True)
+    created_at = peewee.DateTimeField()
+    duration = peewee.CharField()
+    vus = peewee.IntegerField()
+    best_of = peewee.IntegerField()
+    workers = peewee.IntegerField()
+    python_server = peewee.CharField()
+    hostname = peewee.CharField(null=True)
+
+    class Meta:
+        table_name = "runs"
+
+
+class Result(BaseModel):
+    run = peewee.ForeignKeyField(Run, backref="results", field="run_id", column_name="run_id")
+    framework = peewee.CharField()
+    test = peewee.CharField()
+    attempt = peewee.IntegerField()
+    reqs_per_sec = peewee.FloatField()
+    latency_avg_ms = peewee.FloatField()
+    latency_p50_ms = peewee.FloatField()
+    latency_p75_ms = peewee.FloatField()
+    latency_p90_ms = peewee.FloatField()
+    latency_p99_ms = peewee.FloatField()
+    failed_rate = peewee.FloatField()
+    total_requests = peewee.IntegerField()
+    score = peewee.FloatField()
+    is_best = peewee.BooleanField()
+    peak_rss_mb = peewee.FloatField(null=True)
+    avg_rss_mb = peewee.FloatField(null=True)
+    avg_cpu_pct = peewee.FloatField(null=True)
+    peak_cpu_pct = peewee.FloatField(null=True)
+    cpu_spark = peewee.CharField(null=True)
+    mem_spark = peewee.CharField(null=True)
+
+    class Meta:
+        table_name = "results"
+
+
+TEST_LABELS = {
+    "test1": "1 - GET /info",
+    "test2": "2 - POST /movies (JWT)",
+    "test3": "3 - GET proxy (upstream)",
+    "test4": "4 - GET /users/me (DB)",
+}
+
+COLUMNS = [
+    "Framework",
+    "req/s",
+    "vs",
+    "mean",
+    "vs",
+    "p99",
+    "vs",
+    "succ%",
+    "memPk",
+    "memAv",
+    "cpuAv",
+    "cpuPk",
+    "cpu ~",
+    "mem ~",
+]
+SPARK_COLUMNS = {12, 13}
+SPARK_WIDTH = 16
+
+H, V = "─", "│"
+TL, TM, TR = "┌", "┬", "┐"
+ML, MM, MR = "├", "┼", "┤"
+BL, BM, BR = "└", "┴", "┘"
+
+
+def _fmt_rps(v: float) -> str:
+    return f"~{v / 1000:.1f}k" if v >= 1000 else f"{v:.0f}"
+
+
+def _rule(left: str, mid: str, right: str, widths: list[int]) -> str:
+    return left + mid.join(H * (w + 2) for w in widths) + right
+
+
+def _row(cells: list[str], widths: list[int]) -> str:
+    return V + V.join(f" {c:<{w}} " for c, w in zip(cells, widths, strict=True)) + V
+
+
+def _render_table(test: str, results: list[Result]) -> list[str]:
+    jero = next((r for r in results if r.framework == "jero"), None)
+    grid = [COLUMNS]
+    for r in results:
+        vs_rps = f"x{r.reqs_per_sec / jero.reqs_per_sec:.2f}" if jero and jero.reqs_per_sec else "-"
+        vs_mean = (
+            f"x{jero.latency_avg_ms / r.latency_avg_ms:.2f}" if jero and r.latency_avg_ms else "-"
+        )
+        vs_p99 = (
+            f"x{jero.latency_p99_ms / r.latency_p99_ms:.2f}" if jero and r.latency_p99_ms else "-"
+        )
+        grid.append([
+            r.framework,
+            _fmt_rps(r.reqs_per_sec),
+            vs_rps,
+            f"{r.latency_avg_ms:.2f}ms",
+            vs_mean,
+            f"{r.latency_p99_ms:.2f}ms",
+            vs_p99,
+            f"{(1 - r.failed_rate) * 100:.2f}",
+            f"{r.peak_rss_mb or 0:.0f}M",
+            f"{r.avg_rss_mb or 0:.0f}M",
+            f"{r.avg_cpu_pct or 0:.0f}%",
+            f"{r.peak_cpu_pct or 0:.0f}%",
+            r.cpu_spark or "",
+            r.mem_spark or "",
+        ])
+
+    widths = []
+    for c in range(len(COLUMNS)):
+        widths.append(
+            SPARK_WIDTH if c in SPARK_COLUMNS else max(len(grid_row[c]) for grid_row in grid)
+        )
+
+    lines = [_rule(TL, TM, TR, widths), _row(grid[0], widths), _rule(ML, MM, MR, widths)]
+    body = grid[1:]
+    for i, grid_row in enumerate(body):
+        lines.append(_row(grid_row, widths))
+        if i < len(body) - 1:
+            lines.append(_rule(ML, MM, MR, widths))
+    lines.append(_rule(BL, BM, BR, widths))
+
+    return [TEST_LABELS.get(test, test), *lines]
+
+
+def _pick_run(destination: str) -> str:
+    """No run_id given: list the most recent runs with a single base36
+    character label each (0-9, a-z — 36 max, so one keypress always
+    identifies one) and prompt for a pick."""
+    # Fetch the 36 most recent so a busy DB doesn't bury today's runs under
+    # old ones, then re-sort that set oldest to newest for display.
+    runs = list(Run.select().order_by(Run.created_at.desc()).limit(36))
+    if not runs:
+        print(f"no runs found in {destination}", file=sys.stderr)
+        raise SystemExit(1)
+    runs.sort(key=lambda r: r.created_at)
+
+    table = Table(title=f"runs in {destination}")
+    table.add_column("#", style="bold cyan", justify="center")
+    table.add_column("run_id", style="bold")
+    table.add_column("host")
+    table.add_column("created_at")
+    for label, run in zip("0123456789abcdefghijklmnopqrstuvwxyz", runs, strict=False):
+        table.add_row(
+            label,
+            run.run_id,
+            run.hostname or "unknown host",
+            run.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+    Console().print(table)
+
+    choice = input("pick a run: ").strip().lower()
+    index = "0123456789abcdefghijklmnopqrstuvwxyz".find(choice)
+    if index < 0 or index >= len(runs):
+        print(f"invalid pick: {choice!r}", file=sys.stderr)
+        raise SystemExit(1)
+    return runs[index].run_id
+
+
+def main(run_id: str = "") -> None:
+    settings = _get_settings()
+    destination = _describe(settings)
+    if not settings.pg_host and not Path(destination).exists():
+        print(f"no results database at {destination}", file=sys.stderr)
+        raise SystemExit(1)
+
+    db = _get_db()
+    db.initialize(_build_db(settings))
+    db.connect()
+
+    if not run_id:
+        run_id = _pick_run(destination)
+
+    run = Run.get_or_none(Run.run_id == run_id)
+    if run is None:
+        print(f"no run {run_id!r} in {destination}", file=sys.stderr)
+        recent = list(Run.select().order_by(Run.created_at.desc()).limit(10))
+        if recent:
+            print("most recent runs:", file=sys.stderr)
+            for r in recent:
+                print(f"  {r.run_id}  ({r.hostname or 'unknown host'})", file=sys.stderr)
+        raise SystemExit(1)
+
+    print(
+        f"jero-benchmarks · run {run.run_id} · host {run.hostname or 'unknown'} · "
+        f"py:{run.python_server} · {run.vus} VUs · {run.duration}/test · "
+        f"best-of-{run.best_of} · {run.workers} worker(s) · results -> {destination}"
+    )
+
+    tests = [
+        r.test
+        for r in Result
+        .select(Result.test)
+        .where(Result.run == run_id)
+        .distinct()
+        .order_by(Result.test)
+    ]
+    for test in tests:
+        results = list(
+            Result
+            .select()
+            .where((Result.run == run_id) & (Result.test == test) & (Result.is_best == True))  # noqa: E712
+            .order_by(Result.reqs_per_sec.desc())
+        )
+        if not results:
+            continue
+        print()
+        for line in _render_table(test, results):
+            print(line)

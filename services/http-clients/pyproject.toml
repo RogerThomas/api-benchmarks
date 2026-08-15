@@ -1,0 +1,18 @@
+[project]
+name = "http-client-shootout"
+version = "0.0.0"
+description = "Outbound HTTP client shootout — one core, N clients against the upstream."
+requires-python = ">=3.13"
+# Pinned to the versions the shootout was measured with (see results/).
+dependencies = [
+    "aiohttp==3.14.1",
+    "httpx2==2.7.0",
+    "niquests==3.19.1",
+    "pyreqwest==0.12.0",
+    "msgspec==0.21.1",
+    "rich==15.0.0",
+    "yeetr==2026.7.2.post4",
+]
+
+[tool.uv]
+package = false

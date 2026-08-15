@@ -1,0 +1,100 @@
+# Dependent services shared by every framework: Postgres (test 4), the fast
+# Rust (axum) static-JSON `upstream` (test 3), and the k6 `runner`. Combine
+# with exactly one compose.<framework>.yml to bench that framework alone:
+#
+#   RUN_ID=20260813T120000 docker compose \
+#     -f compose.base.yml -f compose.jero.yml \
+#     up --build --abort-on-container-exit --exit-code-from runner
+#
+# `task bench` (bench.py) drives this one framework at a time for every name
+# in $FRAMEWORKS, sharing one RUN_ID (the kickoff timestamp) across the whole
+# invocation so every framework's results land under the same run in
+# results/bench.db. Frameworks never run concurrently, so every one gets an
+# identical, contention-free environment — see README "Fairness".
+
+x-mem: &mem
+  resources:
+    limits:
+      memory: 2G
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    deploy: *mem
+    cpuset: "1,2"
+    # Only one framework's pool (db_pool_size=64) is ever live at a time, so
+    # the default max_connections=100 has plenty of headroom.
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: bench
+      POSTGRES_DB: bench
+    volumes:
+      - ./services/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bench -d bench"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 2s
+    networks: [bench]
+
+  upstream:
+    build: { context: ./services/upstream }
+    deploy: *mem
+    cpuset: "3,4"
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    environment:
+      UPSTREAM_API_KEY: "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
+    healthcheck:
+      # 127.0.0.1, not localhost: busybox wget prefers IPv6 ::1 but axum binds IPv4.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 2s
+    networks: [bench]
+
+  # Each compose.<fw>.yml adds its own `depends_on` entry (itself) and sets
+  # FRAMEWORK — both dict-typed fields, so they merge with what's defined
+  # here rather than replacing it.
+  runner:
+    build: { context: ./loadtest }
+    deploy: *mem
+    cpuset: "5,6"
+    depends_on:
+      upstream: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    environment:
+      RUN_ID: ${RUN_ID}
+      RUN_CREATED_AT: ${RUN_CREATED_AT}
+      JWT_SECRET: "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
+      DURATION: ${DURATION:-10s}
+      VUS: ${VUS:-100}
+      RUNS: ${RUNS:-3}
+      WORKERS: ${WORKERS:-1}
+      PYTHON_SERVER: ${PYTHON_SERVER:-granian}
+      TESTS: ${TESTS:-test1 test2 test3 test4}
+      BENCH_HOSTNAME: ${BENCH_HOSTNAME:-}
+      # Results backend: bench.py reads these from .env and forwards them
+      # here. Postgres (e.g. Neon) if PG_HOST is set, else SQLite — see
+      # loadtest/run.py's Settings.build_database().
+      PG_HOST: ${PG_HOST:-}
+      PG_PORT: ${PG_PORT:-5432}
+      PG_DB: ${PG_DB:-}
+      PG_USER: ${PG_USER:-}
+      PG_PASSWORD: ${PG_PASSWORD:-}
+      PG_SSLMODE: ${PG_SSLMODE:-require}
+      PG_CHANNEL_BINDING: ${PG_CHANNEL_BINDING:-require}
+      SQLITE_PATH: ${SQLITE_PATH:-}
+    volumes:
+      - ./results:/results
+      # Read-only docker socket so the runner can `docker stats` the
+      # framework's own container (cgroup CPU/mem) during each attempt.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [bench]
+
+networks:
+  bench:
+    driver: bridge

@@ -1,0 +1,26 @@
+results/bench.db
+results/report-*.json
+results/run-*.json
+results/attempt-*.json
+# Canonical reports referenced by the FINAL-*.md records — keep them shareable.
+!results/report-20260715T090602.json
+!results/report-20260715T134809.json
+!results/report-20260716T085633.json
+!results/report-20260719T190353.json
+!results/report-20260810T144224.json
+!results/report-20260810T145450.json
+services/gin/server
+# Any Rust/Java build output dir (upstream, spring-boot, future services).
+**/target/
+**/node_modules/
+.DS_Store
+**/.venv/
+**/__pycache__/
+uv.lock
+.in
+.env
+.claude
+# Ad-hoc dev/scratch scripts — not part of the packaged benchmark suite.
+/rust.py
+/pyrust.py
+/tmp.py

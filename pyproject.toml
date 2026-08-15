@@ -1,0 +1,117 @@
+[project]
+name = "jero-benchmarks"
+version = "0.0.0"
+description = "Host-side orchestration for the benchmark suite (bench.py, export_results.py)."
+requires-python = ">=3.13"
+dependencies = [
+    "yeetr>=2026.7.2.post4",
+    "peewee>=3.17",
+    "pydantic-settings>=2.0",
+    "psycopg[binary]>=3.1",
+    "rich>=13.0",
+    "plumbum>=2.0.2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.11.5",
+    "pyright>=1.1.390",
+]
+
+[tool.uv]
+package = false
+
+# Repo-wide lint/format/type-check config (task lint / task format / task
+# typecheck). Ruff/pyright themselves live only in this root project's `dev`
+# group. Scoped to the host + in-container orchestration scripts for now —
+# services/** (each framework's own isolated venv) is excluded until we're
+# ready to tackle that separately. loadtest/run.py's deps (peewee,
+# pydantic-settings, psycopg) are also in this root venv, so pyright's
+# default venv auto-discovery (the `.venv` next to this file) already
+# resolves imports for both — no per-subtree executionEnvironments needed.
+[tool.pyright]
+include = ["bench.py", "export_results.py", "ec2_tail_logs.py", "ec2_launch.py", "loadtest"]
+exclude = ["**/__pycache__", "**/.venv", "**/node_modules", "**/target", "services"]
+typeCheckingMode = "standard"
+pythonVersion = "3.13"
+reportUnusedExpression = "error"
+reportMissingTypeStubs = "warning"
+# peewee's Model.Meta nested-class pattern (every subclass redeclares Meta
+# with its own table_name) trips reportIncompatibleVariableOverride — that's
+# peewee's own idiom, not a real override bug.
+reportIncompatibleVariableOverride = "none"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+fix = true
+exclude = ["**/__pycache__", "services"]
+
+[tool.ruff.lint]
+select = [
+    "A",   # builtins shadowing
+    "ANN", # type annotations
+    "ARG", # unused arguments
+    "B",   # bugbear (common bugs & bad patterns)
+    "BLE", # blind excepts
+    "C4",  # comprehensions
+    "COM", # commas
+    "DTZ", # datetime timezone
+    "E",   # pycodestyle errors
+    "ERA", # eradicate commented-out code
+    "FA",  # future annotations
+    "FBT", # boolean trap
+    "F",   # pyflakes
+    "I",   # import sorting
+    "ICN", # import conventions
+    "ISC", # implicit str concat
+    "N",   # naming conventions
+    "NPY", # numpy rules
+    "PGH", # pygrep-hooks
+    "PTH", # pathlib
+    "PT",  # pytest style
+    "RET", # return statements
+    "RUF", # Ruff extra rules
+    "TRY", # tryceratops
+    "S",   # security
+    "SIM", # simplifications
+    "C90", # mccabe complexity
+    "TID", # tidy imports
+    "TC",  # typing under TYPE_CHECKING
+    "TD",  # TODOs must be annotated
+    "UP",  # pyupgrade / newer syntax
+    "W",   # pycodestyle warnings
+    "YTT", # flake8-2020
+    "T10", # debugger statements
+]
+ignore = [
+    "S101",   # use of assert detected
+    "COM812", # missing-trailing-comma — conflicts with the formatter, ruff's own advice
+    "S603",   # subprocess-without-shell-equals-true — every call here is a fixed
+              #   argument list to a trusted tool (docker/uv/k6/git); shell=True
+              #   would be the actual footgun, not this.
+    "S607",   # start-process-with-partial-path — same reasoning: "docker"/"uv"/"k6"
+              #   are trusted, not attacker-controlled input.
+]
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-decorators = [
+    "fastapi.FastAPI.get",
+    "fastapi.FastAPI.post",
+    "fastapi.FastAPI.put",
+    "fastapi.FastAPI.patch",
+    "fastapi.FastAPI.delete",
+    "fastapi.FastAPI.api_route",
+    "pydantic.validate_call",
+    "fastapi.APIRouter.get",
+    "fastapi.APIRouter.post",
+    "fastapi.APIRouter.put",
+    "fastapi.APIRouter.patch",
+    "fastapi.APIRouter.delete",
+    "fastapi.APIRouter.api_route",
+]
+
+[tool.ruff.format]
+preview = true
+docstring-code-format = true
+quote-style = "double"

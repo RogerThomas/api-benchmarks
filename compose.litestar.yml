@@ -1,0 +1,38 @@
+# Litestar — combine with compose.base.yml (see that file for the full command).
+# `task bench` drives this automatically for every name in $FRAMEWORKS.
+
+services:
+  litestar:
+    build: { context: ./services/python, target: litestar }
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    cpuset: "0"
+    environment:
+      JWT_SECRET: "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
+      WORKERS: ${WORKERS:-1}
+      PYTHON_SERVER: ${PYTHON_SERVER:-granian}
+      UPSTREAM_URL: http://upstream:8000
+      UPSTREAM_API_KEY: "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: bench
+      DB_USER: bench
+      DB_PASSWORD: bench
+    depends_on:
+      upstream: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/info')"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 2s
+    networks: [bench]
+
+  runner:
+    depends_on:
+      litestar: { condition: service_healthy }
+    environment:
+      FRAMEWORK: litestar
