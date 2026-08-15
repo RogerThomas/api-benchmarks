@@ -1,7 +1,3 @@
-# Generated per-run reports (export_results.py) -- keep the folder, ignore its
-# contents; regenerate any time with `task export-results`.
-reports/*
-!reports/.gitkeep
 results/bench.db
 results/report-*.json
 results/run-*.json
