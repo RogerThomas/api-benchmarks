@@ -346,16 +346,70 @@ def _build_chart_svg(
 
     mpl.use("svg")
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
 
     bg, ink, subink, faint = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
     hilite, other = "#2a78d6", "#a8adb3"
 
+    mpl.rcParams["font.family"] = "sans-serif"
+    mpl.rcParams["font.sans-serif"] = [
+        "Helvetica Neue",
+        "Helvetica",
+        "Arial",
+        "DejaVu Sans",
+        "sans-serif",
+    ]
+    mpl.rcParams["axes.unicode_minus"] = False
+
+    # Fixed-size header (title + caption + legend) in inches, independent of
+    # the panel-grid height below it -- keeping these in points/inches (never
+    # axes-fraction) is what keeps the header a constant size as the number
+    # of framework rows -- and therefore the figure height -- changes.
+    header_in = 0.92
+    footer_in = 0.16
     max_rows = max((len(v) for v in results_by_test.values()), default=1)
-    fig_height = 2.6 + 1.05 * max_rows
-    fig, axes = plt.subplots(2, 2, figsize=(12, fig_height), facecolor=bg)
-    fig.suptitle(
-        "jero-benchmarks", fontsize=16, fontweight="bold", color=ink, x=0.04, ha="left", y=0.99
+    fig_width = 12.6
+    fig_height = header_in + footer_in + 1.05 * max_rows + 1.15
+    fig, axes = plt.subplots(2, 2, figsize=(fig_width, fig_height), facecolor=bg)
+
+    fig.text(
+        0.026,
+        0.988,
+        "jero-benchmarks",
+        fontsize=18,
+        fontweight="bold",
+        color=ink,
+        ha="left",
+        va="top",
     )
+    fig.text(
+        0.026,
+        0.988 - 24 / (fig_height * 72),
+        "Throughput (reqs/sec) · each panel ranked and scaled to its own fastest result",
+        fontsize=10.5,
+        color=subink,
+        ha="left",
+        va="top",
+    )
+    legend = fig.legend(
+        handles=[
+            Patch(facecolor=hilite, edgecolor="none", label="jero"),
+            Patch(facecolor=other, edgecolor="none", label="others"),
+        ],
+        loc="upper right",
+        bbox_to_anchor=(0.978, 0.985),
+        frameon=False,
+        ncol=2,
+        handlelength=1.0,
+        handleheight=1.0,
+        handletextpad=0.5,
+        columnspacing=1.4,
+        fontsize=10.5,
+    )
+    for text, is_jero in zip(legend.get_texts(), (True, False), strict=True):
+        text.set_color(ink if is_jero else subink)
+        if is_jero:
+            text.set_fontweight("bold")
 
     for ax, test in zip(axes.flat, tests[:4], strict=False):
         results = sorted(results_by_test.get(test, []), key=lambda r: r.reqs_per_sec, reverse=True)
@@ -376,11 +430,9 @@ def _build_chart_svg(
             color = hilite if is_jero else other
             weight = "bold" if is_jero else "normal"
             text_color = ink if is_jero else subink
-            ax.plot(
-                [0, r.reqs_per_sec], [y, y], linewidth=15, solid_capstyle="round", color=color
-            )
+            ax.plot([0, r.reqs_per_sec], [y, y], linewidth=12, solid_capstyle="round", color=color)
             ax.text(
-                -max_val * 0.03,
+                -max_val * 0.035,
                 y,
                 r.framework,
                 ha="right",
@@ -390,7 +442,7 @@ def _build_chart_svg(
                 fontweight=weight,
             )
             ax.text(
-                r.reqs_per_sec + max_val * 0.03,
+                r.reqs_per_sec + max_val * 0.035,
                 y,
                 _fmt_rps(r.reqs_per_sec),
                 ha="left",
@@ -400,12 +452,40 @@ def _build_chart_svg(
                 fontweight=weight,
             )
         ax.set_xlim(-max_val * 0.55, max_val * 1.3)
-        ax.set_ylim(-0.7, n - 0.3)
-        title, subtitle = TEST_HEADLINES.get(test, (test, ""))
-        ax.set_title(title, loc="left", fontsize=13, fontweight="semibold", color=ink, pad=18)
-        ax.text(1.0, 1.1, subtitle, transform=ax.transAxes, ha="right", fontsize=10, color=faint)
+        ax.set_ylim(-0.75, n - 0.25)
 
-    fig.tight_layout(rect=(0.02, 0.01, 0.99, 0.94))
+        title, subtitle = TEST_HEADLINES.get(test, (test, ""))
+        # Offsets in points (not axes-fraction) so the title/subtitle sit a
+        # fixed distance above each panel regardless of that panel's height.
+        ax.annotate(
+            title,
+            xy=(0.0, 1.0),
+            xycoords="axes fraction",
+            xytext=(0, 10),
+            textcoords="offset points",
+            ha="left",
+            va="bottom",
+            fontsize=13,
+            fontweight="bold",
+            color=ink,
+            annotation_clip=False,
+        )
+        ax.annotate(
+            subtitle,
+            xy=(1.0, 1.0),
+            xycoords="axes fraction",
+            xytext=(0, 13),
+            textcoords="offset points",
+            ha="right",
+            va="bottom",
+            fontsize=10,
+            color=faint,
+            annotation_clip=False,
+        )
+
+    top = 1 - header_in / fig_height
+    bottom = footer_in / fig_height
+    fig.tight_layout(rect=(0.018, bottom, 0.99, top), h_pad=3.2, w_pad=2.4)
     fig.savefig(svg_path, format="svg", facecolor=bg)
     plt.close(fig)
 
