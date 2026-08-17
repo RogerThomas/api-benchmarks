@@ -89,6 +89,7 @@ class Run(BaseModel):
     best_of = peewee.IntegerField()
     workers = peewee.IntegerField()
     python_server = peewee.CharField()
+    loop = peewee.CharField(null=True)
     hostname = peewee.CharField(null=True)
     ec2_ami_id = peewee.CharField(null=True)
     ec2_instance_type = peewee.CharField(null=True)
@@ -111,7 +112,6 @@ class Result(BaseModel):
     latency_p99_ms = peewee.FloatField()
     failed_rate = peewee.FloatField()
     total_requests = peewee.IntegerField()
-    score = peewee.FloatField()
     is_best = peewee.BooleanField()
     peak_rss_mb = peewee.FloatField(null=True)
     avg_rss_mb = peewee.FloatField(null=True)
@@ -294,7 +294,7 @@ FRAMEWORK_FACTS: dict[str, dict[str, str]] = {
         "language": "Python 3.13",
         "server": "granian ASGI",
         "http_client": "pyreqwest",
-        "db_driver": "psycopg (Django ORM)",
+        "db_driver": "psqlpy",
         "validates_body": "pydantic (Schema)",
         "parses_upstream": "passthrough bytes",
         "serializer": "pydantic",
@@ -303,7 +303,7 @@ FRAMEWORK_FACTS: dict[str, dict[str, str]] = {
         "language": "Python 3.13",
         "server": "built-in Rust server",
         "http_client": "pyreqwest",
-        "db_driver": "psycopg (Django ORM)",
+        "db_driver": "psqlpy",
         "validates_body": "msgspec Struct",
         "parses_upstream": "passthrough bytes",
         "serializer": "msgspec",
@@ -532,12 +532,7 @@ GIL-releasing extensions like `msgspec`/`psqlpy`) to one core with no such stall
 connections for every framework/language.
 
 **Best of N.** Each (framework, test) pair runs multiple attempts; the
-best-scoring attempt is kept. Score equally weights throughput and latency,
-each normalized against that test's best attempt:
-
-```
-score = reqsPerSec/maxReqs + minMean/mean + minP99/p99
-```
+attempt with the highest req/s is kept.
 
 **Resource-use columns.** `memPk`/`memAv` = peak/average resident memory (MB);
 `cpuAv`/`cpuPk` = average/peak CPU as % of one core (pinned via `cpuset`, so
@@ -549,6 +544,13 @@ time series during the attempt. Only the framework's own container is measured
 *native* tool differs:
 
 {fact_table}
+
+**One deliberate exception to per-framework idiom:** the two Django frameworks
+reach Postgres through raw psqlpy -- the same driver the rest of the async
+Python fleet uses -- rather than Django's ORM, whose sync-driver-behind-an-async-facade
+design would make test 4 a measurement of Django's data layer instead of the
+framework. For the same reason, every JWT endpoint hand-decodes the bearer
+token with PyJWT rather than using each framework's own auth integration.
 
 **Known, intended differences** (each framework's real idiomatic behaviour, kept
 rather than normalised away): the JSON serializer column (stdlib `json` is
@@ -589,6 +591,7 @@ def _render_report(
         f"| **Best of** | {run.best_of} |",
         f"| **Server workers** | {run.workers} |",
         f"| **Python server** | {run.python_server} |",
+        f"| **Event loop** | {run.loop or 'uvloop (default, pre-dates this column)'} |",
         f"| **Frameworks** | {', '.join(frameworks)} |",
         f"| **Results backend** | {destination} |",
         "",
@@ -653,7 +656,6 @@ def _result_to_dict(r: Result) -> dict[str, object]:
         "latency_p99_ms": r.latency_p99_ms,
         "failed_rate": r.failed_rate,
         "total_requests": r.total_requests,
-        "score": r.score,
         "is_best": r.is_best,
         "peak_rss_mb": r.peak_rss_mb,
         "avg_rss_mb": r.avg_rss_mb,
@@ -670,7 +672,8 @@ def _write_results_json(run: Run, json_path: Path) -> None:
     tables show -- so the best-of-N selection can be reprocessed or verified
     independently."""
     all_results = list(
-        Result.select()
+        Result
+        .select()
         .where(Result.run == run.run_id)
         .order_by(Result.framework, Result.test, Result.attempt)
     )
@@ -756,7 +759,7 @@ def main(run_id: str = "") -> None:
 
     print(
         f"jero-benchmarks · run {run.run_id} · host {run.hostname or 'unknown'} · "
-        f"py:{run.python_server} · {run.vus} VUs · {run.duration}/test · "
+        f"py:{run.python_server}/{run.loop or 'uvloop'} · {run.vus} VUs · {run.duration}/test · "
         f"best-of-{run.best_of} · {run.workers} worker(s) · results -> {destination}"
     )
 

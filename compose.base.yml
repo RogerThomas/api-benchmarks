@@ -75,6 +75,12 @@ services:
       RUNS: ${RUNS:-3}
       WORKERS: ${WORKERS:-1}
       PYTHON_SERVER: ${PYTHON_SERVER:-granian}
+      LOOP: ${LOOP:-uvloop}
+      # Set by bench.py's --python-servers sweep to tag results distinctly
+      # (e.g. "jero-granian") when the same framework runs under more than
+      # one server in a single run; blank otherwise (Result.framework then
+      # falls back to the plain framework name, see loadtest/run.py).
+      RESULT_LABEL: ${RESULT_LABEL:-}
       TESTS: ${TESTS:-test1 test2 test3 test4}
       BENCH_HOSTNAME: ${BENCH_HOSTNAME:-}
       # Informational only (not needed to run a bench) -- set by ec2_launch.py

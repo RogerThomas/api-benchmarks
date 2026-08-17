@@ -15,6 +15,7 @@ services:
       JWT_SECRET: "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
       WORKERS: ${WORKERS:-1}
       PYTHON_SERVER: ${PYTHON_SERVER:-granian}
+      LOOP: ${LOOP:-uvloop}
       UPSTREAM_URL: http://upstream:8000
       UPSTREAM_API_KEY: "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
       DB_HOST: postgres

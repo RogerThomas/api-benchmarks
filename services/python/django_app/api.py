@@ -27,12 +27,11 @@ from uuid import uuid4
 
 import jwt
 import msgspec
+import psqlpy
 from django.http import HttpResponse
 from django_bolt import BoltAPI
 from pyreqwest.client import ClientBuilder
 from settings import Settings
-
-from .models import User as UserRow
 
 _settings = Settings()
 
@@ -171,6 +170,12 @@ async def catalog():
 
 
 # --- Test 4: GET /users/me (Postgres) ----------------------------------------
+#
+# Raw psqlpy, not Django's ORM -- same driver every other async framework in
+# this fleet uses (jero/FastAPI/Litestar/Blacksheep/Robyn); routing this
+# through Django's ORM, or even through a different raw driver, would be
+# adding/using different work than everyone else rather than a fair
+# idiomatic difference (see README "Equal work, per test").
 
 
 class Profile(msgspec.Struct):
@@ -182,18 +187,38 @@ class Profile(msgspec.Struct):
     country: str
 
 
+_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
+
+_db_pool: psqlpy.ConnectionPool | None = None
+
+
+def _get_db_pool() -> psqlpy.ConnectionPool:
+    global _db_pool
+    if _db_pool is None:
+        _db_pool = psqlpy.ConnectionPool(
+            username=_settings.db_user,
+            password=_settings.db_password,
+            host=_settings.db_host,
+            port=_settings.db_port,
+            db_name=_settings.db_name,
+            max_db_pool_size=_settings.db_pool_size,
+        )
+    return _db_pool
+
+
 @api.get("/users/me")
 async def users_me(request):
     user = _decode_bearer(request.headers.get("authorization", ""))
     if user is None:
         return HttpResponse(status=401)
-    row = await UserRow.objects.aget(id=user["id"])
+    pool = _get_db_pool()
+    async with pool.acquire() as connection:
+        result = await connection.execute(_GET_USER_SQL, [user["id"]])
+    rows = result.result(as_tuple=True)
+    if not rows:
+        return HttpResponse(status=404)
+    row = rows[0]
     response = Profile(
-        id=row.id,
-        name=row.name,
-        email=row.email,
-        address=row.address,
-        city=row.city,
-        country=row.country,
+        id=row[0], name=row[1], email=row[2], address=row[3], city=row[4], country=row[5]
     )
     return HttpResponse(msgspec.json.encode(response), content_type="application/json")

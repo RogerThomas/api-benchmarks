@@ -49,6 +49,7 @@ class ResultsBackendSettings(BaseSettings):
 
 
 type PythonServer = Literal["granian", "uvicorn"]
+type EventLoop = Literal["uvloop", "asyncio"]
 type Framework = Literal[
     "jero",
     "fastapi",
@@ -63,6 +64,10 @@ type Framework = Literal[
     "django-bolt",
 ]
 
+# Frameworks that actually route through serve.sh and respect PYTHON_SERVER --
+# Flask is granian-only (WSGI), Robyn/Django Bolt ship their own server.
+ASGI_FRAMEWORKS = {"jero", "fastapi", "litestar", "blacksheep", "django-ninja"}
+
 
 def main(
     *,
@@ -75,6 +80,19 @@ def main(
     runs: Annotated[int, Opt(help="Attempts per (framework, test); best wins")] = 3,
     workers: Annotated[int, Opt(help="Server workers/processes per framework")] = 1,
     python_server: Annotated[PythonServer, Opt(help="ASGI server")] = "granian",
+    python_servers: Annotated[
+        str,
+        Opt(
+            help=(
+                'Space-separated ASGI servers to sweep per framework, e.g. "granian uvicorn" '
+                '-- overrides --python-server, tags each result as "<framework>-<server>" so '
+                "they show up as distinct rows in one report"
+            )
+        ),
+    ] = "",
+    loop: Annotated[
+        EventLoop, Opt(help="Event loop (Robyn/Django Bolt ignore this, own server)")
+    ] = "uvloop",
     run_id: Annotated[
         str,
         Opt(help="Reuse an existing RUN_ID (e.g. to backfill a framework into a past run)"),
@@ -113,7 +131,7 @@ def main(
         "VUS": str(vus),
         "RUNS": str(runs),
         "WORKERS": str(workers),
-        "PYTHON_SERVER": python_server,
+        "LOOP": loop,
         "BENCH_HOSTNAME": socket.gethostname(),
         "EC2_AMI_ID": ec2_ami_id,
         "EC2_INSTANCE_TYPE": ec2_instance_type,
@@ -128,28 +146,45 @@ def main(
         "SQLITE_PATH": backend.sqlite_path or "",
     }
 
-    print(f"==> run {run_id} · frameworks: {' '.join(fw_list)}")
+    # Normally one (framework, server) pair per framework. When --python-servers
+    # names more than one server, every ASGI-capable framework is run once per
+    # server in that list, each tagged "<framework>-<server>" so they land as
+    # distinct rows in the same report (see loadtest/run.py's RESULT_LABEL).
+    servers_list = python_servers.split() if python_servers else [python_server]
+    work_items: list[tuple[str, str, str]] = []
+    for fw in fw_list:
+        if fw in ASGI_FRAMEWORKS and len(servers_list) > 1:
+            work_items += [(fw, server, f"{fw}-{server}") for server in servers_list]
+        else:
+            work_items.append((fw, servers_list[0], ""))
+
+    print(
+        f"==> run {run_id} · {len(work_items)} item(s): "
+        f"{' '.join(label or fw for fw, _, label in work_items)}"
+    )
     root = Path(__file__).resolve().parent
     base_file = root / "compose.base.yml"
     failures = []
-    for fw in fw_list:
+    for fw, server, label in work_items:
+        display = label or fw
         fw_file = root / f"compose.{fw}.yml"
         if not fw_file.exists():
-            print(f"==> skipping {fw}: no {fw_file.name}", file=sys.stderr)
-            failures.append(fw)
+            print(f"==> skipping {display}: no {fw_file.name}", file=sys.stderr)
+            failures.append(display)
             continue
 
-        print(f"\n==> {fw}: base + {fw}")
+        print(f"\n==> {display}: base + {fw} (python_server={server})")
+        combo_env = {**env, "PYTHON_SERVER": server, "RESULT_LABEL": label}
         compose = local["docker"]["compose", "-f", str(base_file), "-f", str(fw_file)].with_env(
-            **env
+            **combo_env
         )
         try:
             up_rc, _, _ = compose[
                 "up", "--build", "--abort-on-container-exit", "--exit-code-from", "runner"
             ].run(retcode=None, stdout=None, stderr=None)
             if up_rc != 0:
-                print(f"==> {fw}: FAILED (exit {up_rc})", file=sys.stderr)
-                failures.append(fw)
+                print(f"==> {display}: FAILED (exit {up_rc})", file=sys.stderr)
+                failures.append(display)
         finally:
             compose["down", "-v"].run(retcode=None)
 

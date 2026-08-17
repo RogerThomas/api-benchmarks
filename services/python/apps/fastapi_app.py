@@ -4,7 +4,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 import jwt
 import psqlpy
@@ -126,13 +126,17 @@ class AuthService:
 
 # Async dependency: runs on the event loop (no threadpool hop, unlike a sync
 # dependency). Pulls the shared AuthService off app.state and verifies the header.
-async def current_user(request: Request, authorization: str = Header()) -> User:
+async def _get_current_user(request: Request, authorization: str = Header()) -> User:
     auth: AuthService = request.app.state.auth
     return auth.authenticate(authorization)
 
 
+type UserDep = Annotated[User, Depends(_get_current_user)]
+
+
+
 @app.post("/movies", status_code=201)
-async def create_movie(movie: MovieIn, user: User = Depends(current_user)) -> Movie:
+async def create_movie(movie: MovieIn, user: UserDep) -> Movie:
     return Movie(id=str(uuid.uuid4()), user=user, **movie.model_dump())
 
 
@@ -175,10 +179,11 @@ async def _get_catalog_service(request: Request) -> CatalogService:
     return request.app.state.catalog_service
 
 
+type CatalogServiceDep = Annotated[CatalogService, Depends(_get_catalog_service)]
+
+
 @app.get("/catalog")
-async def catalog(
-    catalog_service: CatalogService = Depends(_get_catalog_service),
-) -> Product:
+async def catalog(catalog_service: CatalogServiceDep) -> Product:
     return await catalog_service.fetch()
 
 
@@ -221,9 +226,10 @@ async def _get_user_service(request: Request) -> UserService:
     return request.app.state.user_service
 
 
+
+type UserServiceDep = Annotated[UserService, Depends(_get_user_service)]
+
+
 @app.get("/users/me")
-async def users_me(
-    user: User = Depends(current_user),
-    user_service: UserService = Depends(_get_user_service),
-) -> Profile:
+async def users_me(user: UserDep, user_service: UserService) -> Profile:
     return await user_service.get_profile(user.id)

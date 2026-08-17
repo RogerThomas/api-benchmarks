@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     vus: str = "50"
     workers: int = 1
     python_server: str = "granian"
+    loop: str = "uvloop"
+    result_label: str | None = None
     run_id: str
     run_created_at: datetime
     results_dir: Path = Path("/results")
@@ -111,6 +113,7 @@ class Run(BaseModel):
     best_of = peewee.IntegerField()
     workers = peewee.IntegerField()
     python_server = peewee.CharField()
+    loop = peewee.CharField(null=True)
     hostname = peewee.CharField(null=True)
     ec2_ami_id = peewee.CharField(null=True)
     ec2_instance_type = peewee.CharField(null=True)
@@ -137,7 +140,6 @@ class Result(BaseModel):
     latency_p99_ms = peewee.FloatField()
     failed_rate = peewee.FloatField()
     total_requests = peewee.IntegerField()
-    score = peewee.FloatField()
     is_best = peewee.BooleanField()
     peak_rss_mb = peewee.FloatField(null=True)
     avg_rss_mb = peewee.FloatField(null=True)
@@ -269,31 +271,19 @@ def _run_attempt(test: str, attempt: int, work_dir: Path) -> dict:
     return data
 
 
-def _score(attempt: dict, max_reqs: float, min_mean: float, min_p99: float) -> float:
-    return (
-        attempt["reqsPerSec"] / max_reqs
-        + min_mean / attempt["latencyMs"]["avg"]
-        + min_p99 / attempt["latencyMs"]["p99"]
-    )
-
-
 def _bench_test(test: str, work_dir: Path) -> list[dict]:
     settings = _get_settings()
-    print(f"==> {settings.framework} / {test} (best of {settings.runs})")
+    display = settings.result_label or settings.framework
+    print(f"==> {display} / {test} (best of {settings.runs})")
     attempts = [_run_attempt(test, i, work_dir) for i in range(1, settings.runs + 1)]
     for a in attempts:
         print(
-            f"  {settings.framework}/{test} attempt {a['attempt']}: {a['reqsPerSec']:.0f} req/s, "
+            f"  {display}/{test} attempt {a['attempt']}: {a['reqsPerSec']:.0f} req/s, "
             f"mean {a['latencyMs']['avg']:.2f}ms, p99 {a['latencyMs']['p99']:.2f}ms"
         )
-    max_reqs = max(a["reqsPerSec"] for a in attempts)
-    min_mean = min(a["latencyMs"]["avg"] for a in attempts)
-    min_p99 = min(a["latencyMs"]["p99"] for a in attempts)
+    best = max(a["reqsPerSec"] for a in attempts)
     for a in attempts:
-        a["score"] = _score(a, max_reqs, min_mean, min_p99)
-    best = max(a["score"] for a in attempts)
-    for a in attempts:
-        a["is_best"] = a["score"] == best
+        a["is_best"] = a["reqsPerSec"] == best
     return attempts
 
 
@@ -308,7 +298,7 @@ def _insert_results(test: str, attempts: list[dict]) -> None:
         # makes reruns idempotent either way.
         Result.insert(
             run=settings.run_id,
-            framework=settings.framework,
+            framework=settings.result_label or settings.framework,
             test=test,
             attempt=a["attempt"],
             reqs_per_sec=a["reqsPerSec"],
@@ -319,7 +309,6 @@ def _insert_results(test: str, attempts: list[dict]) -> None:
             latency_p99_ms=a["latencyMs"]["p99"],
             failed_rate=a["failedRate"],
             total_requests=a["totalRequests"],
-            score=a["score"],
             is_best=a["is_best"],
             peak_rss_mb=a.get("peak_rss_mb"),
             avg_rss_mb=a.get("avg_rss_mb"),
@@ -338,7 +327,6 @@ def _insert_results(test: str, attempts: list[dict]) -> None:
                 Result.latency_p99_ms,
                 Result.failed_rate,
                 Result.total_requests,
-                Result.score,
                 Result.is_best,
                 Result.peak_rss_mb,
                 Result.avg_rss_mb,
@@ -358,10 +346,11 @@ def main() -> None:
         if settings.pg_host
         else settings.sqlite_path or str(settings.results_dir / "bench.db")
     )
+    display = settings.result_label or settings.framework
     print(
-        f"==> {settings.framework} · py:{settings.python_server} · {settings.vus} VUs · "
-        f"{settings.duration}/test · best-of-{settings.runs} · {settings.workers} worker(s) · "
-        f"run {settings.run_id} · results -> {destination}"
+        f"==> {display} · py:{settings.python_server}/{settings.loop} · "
+        f"{settings.vus} VUs · {settings.duration}/test · best-of-{settings.runs} · "
+        f"{settings.workers} worker(s) · run {settings.run_id} · results -> {destination}"
     )
 
     db = _get_db()
@@ -377,6 +366,7 @@ def main() -> None:
             "best_of": settings.runs,
             "workers": settings.workers,
             "python_server": settings.python_server,
+            "loop": settings.loop,
             "hostname": settings.bench_hostname,
             "ec2_ami_id": settings.ec2_ami_id,
             "ec2_instance_type": settings.ec2_instance_type,
@@ -392,4 +382,4 @@ def main() -> None:
         shutil.rmtree(work_dir, ignore_errors=True)
         db.close()
 
-    print(f"\n==> wrote {settings.framework} results to {destination} under run {settings.run_id}")
+    print(f"\n==> wrote {display} results to {destination} under run {settings.run_id}")

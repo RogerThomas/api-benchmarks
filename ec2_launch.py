@@ -99,7 +99,19 @@ def _render_user_data(settings: EC2Settings, *, bench_args: str) -> str:
     )
 
 
-def main(*, duration: str = "60s", vus: int = 128, frameworks: str = "", run_id: str = "") -> None:
+def main(
+    *,
+    duration: str = "60s",
+    vus: int = 128,
+    runs: int = 3,
+    python_server: str = "granian",
+    python_servers: str = "",
+    loop: str = "uvloop",
+    frameworks: str = "",
+    tests: str = "",
+    run_id: str = "",
+    spot: bool = False,
+) -> None:
     settings = EC2Settings()
     if not (settings.pg_host and settings.pg_user and settings.pg_password and settings.pg_db):
         print(
@@ -111,12 +123,17 @@ def main(*, duration: str = "60s", vus: int = 128, frameworks: str = "", run_id:
 
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     bench_args = (
-        f"--duration {duration} --vus {vus} --run-id {run_id} "
+        f"--duration {duration} --vus {vus} --runs {runs} --run-id {run_id} "
+        f"--python-server {python_server} --loop {loop} "
         f"--ec2-ami-id {settings.ec2_ami_id} --ec2-instance-type {settings.ec2_instance_type} "
         f"--aws-region {settings.aws_region}"
     )
+    if python_servers:
+        bench_args += f' --python-servers "{python_servers}"'
     if frameworks:
         bench_args += f' --frameworks "{frameworks}"'
+    if tests:
+        bench_args += f' --tests "{tests}"'
 
     print(f"==> syncing code to s3://{settings.ec2_s3_bucket}/code/jero-benchmarks.tar.gz")
     _sync_code(settings)
@@ -128,37 +145,53 @@ def main(*, duration: str = "60s", vus: int = 128, frameworks: str = "", run_id:
         user_data_file.write(user_data)
     user_data_path = Path(user_data_file.name)
 
+    run_instances_args = [
+        "ec2",
+        "run-instances",
+        "--region",
+        settings.aws_region,
+        "--image-id",
+        settings.ec2_ami_id,
+        "--instance-type",
+        settings.ec2_instance_type,
+        "--key-name",
+        settings.ec2_key_name,
+        "--security-group-ids",
+        settings.ec2_security_group_id,
+        "--subnet-id",
+        settings.ec2_subnet_id,
+        "--iam-instance-profile",
+        f"Name={settings.ec2_iam_instance_profile}",
+        "--instance-initiated-shutdown-behavior",
+        "terminate",
+        "--user-data",
+        f"file://{user_data_path}",
+        "--tag-specifications",
+        f"ResourceType=instance,Tags=[{{Key=Name,Value={run_id}}}]",
+        "--query",
+        "Instances[0].InstanceId",
+        "--output",
+        "text",
+    ]
+    if spot:
+        # One-time (not persistent) -- matches the fire-and-forget lifecycle:
+        # no auto-relaunch if AWS reclaims the capacity mid-run. Left
+        # capped at the on-demand price implicitly (no MaxPrice override).
+        run_instances_args += [
+            "--instance-market-options",
+            (
+                '{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time",'
+                '"InstanceInterruptionBehavior":"terminate"}}'
+            ),
+        ]
+
     try:
-        instance_id = local["aws"][
-            "ec2",
-            "run-instances",
-            "--region",
-            settings.aws_region,
-            "--image-id",
-            settings.ec2_ami_id,
-            "--instance-type",
-            settings.ec2_instance_type,
-            "--key-name",
-            settings.ec2_key_name,
-            "--security-group-ids",
-            settings.ec2_security_group_id,
-            "--subnet-id",
-            settings.ec2_subnet_id,
-            "--iam-instance-profile",
-            f"Name={settings.ec2_iam_instance_profile}",
-            "--instance-initiated-shutdown-behavior",
-            "terminate",
-            "--user-data",
-            f"file://{user_data_path}",
-            "--tag-specifications",
-            f"ResourceType=instance,Tags=[{{Key=Name,Value={run_id}}}]",
-            "--query",
-            "Instances[0].InstanceId",
-            "--output",
-            "text",
-        ]().strip()
+        instance_id = local["aws"][run_instances_args]().strip()
     finally:
         user_data_path.unlink(missing_ok=True)
 
-    print(f"launched {instance_id} (run {run_id}) in {settings.aws_region} -- {bench_args}")
+    market = "spot" if spot else "on-demand"
+    print(
+        f"launched {instance_id} ({market}, run {run_id}) in {settings.aws_region} -- {bench_args}"
+    )
     print(f"uv run yeet ./ec2_tail_logs.py {instance_id}")

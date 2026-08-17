@@ -40,17 +40,10 @@ for the full list.
 
 ### Best of N
 
-Every (framework, test) pair runs `RUNS` times (default **3**) and the best attempt is
-kept — smoothing out noise. "Best" is the highest composite score, equally weighting
-throughput and latency, each metric normalized against the best of that test's attempts:
-
-```
-score = reqsPerSec/maxReqs  +  minMean/mean  +  minP99/p99
-```
-
-so higher reqs/s and lower mean & p99 all push the score up (each term ∈ (0, 1]). The
-chosen attempt is what the comparison tables use; every attempt is still in
-`results/bench.db` (`results.is_best` marks the winner) for transparency.
+Every (framework, test) pair runs `RUNS` times (default **3**) — smoothing out noise —
+and the attempt with the highest req/s is kept. That's what the comparison tables use;
+every attempt is still in `results/bench.db` (`results.is_best` marks the winner) for
+transparency.
 
 Other knobs (CLI flags — see `uv run yeet ./bench.py --help`): `--vus` (k6 concurrency,
 default 100), `--runs` (attempts per test, default 3), `--workers` (server workers per
@@ -79,11 +72,9 @@ trimmed row looks like:
 
 | Framework | Language | Server (1 worker) | Outbound HTTP client | DB driver |
 | --- | --- | --- | --- | --- |
-| jero, FastAPI, Litestar, Blacksheep | Python 3.13 | granian ASGI (`--loop uvloop`) | pyreqwest | psqlpy |
-| Django Ninja | Python 3.13 | granian ASGI | pyreqwest | psycopg (Django ORM) |
+| jero, FastAPI, Litestar, Blacksheep, Django Ninja | Python 3.13 | granian ASGI (`--loop uvloop`) | pyreqwest | psqlpy |
 | Flask | Python 3.13 | granian WSGI | pyreqwest (sync) | psycopg |
-| Robyn | Python 3.13 | built-in Rust server | pyreqwest | psqlpy |
-| Django Bolt | Python 3.13 | built-in Rust server (`manage.py runbolt`) | pyreqwest | psycopg (Django ORM) |
+| Robyn, Django Bolt | Python 3.13 | built-in Rust server (Bolt: `manage.py runbolt`) | pyreqwest | psqlpy |
 | Gin | Go | net/http (`GOMAXPROCS=1`) | net/http | pgx |
 | Elysia | Bun / TS | Bun native | `fetch` | Bun `SQL` |
 | Spring Boot | Java 25 | embedded Tomcat, virtual threads | RestClient (Apache HttpClient5) | JdbcTemplate (HikariCP) |
@@ -91,10 +82,12 @@ trimmed row looks like:
 All apps use idiomatic, framework-recommended code (no deep optimisations). The Python
 ASGI frameworks share granian as the server so the variable under test is the
 *framework*, not the server (switch to uvicorn with `--python-server uvicorn` — Robyn and
-Django Bolt ship their own servers and ignore this knob). The two Django frameworks use
-Django's ORM (an unmanaged model over the same shared `users` table) rather than a raw
-driver — the idiomatic Django data-access pattern, and a real, visible difference from
-the rest of the fleet.
+Django Bolt ship their own servers and ignore this knob). The two Django frameworks query
+the shared `users` table with raw psqlpy — the same driver every other async framework in
+this fleet uses — rather than Django's ORM or a different raw driver; either would be
+doing different work than everyone else rather than a fair idiomatic difference. (Django
+itself still depends on psycopg internally for its own `DATABASES` config to boot, even
+though the benchmarked query path never touches it.)
 
 The whole Python field runs **Python 3.13.14** (pinned base image) so **Robyn** — which
 has no `manylinux_aarch64` (Linux/arm64) wheel for CPython 3.14 yet, only for 3.13 —
@@ -229,42 +222,6 @@ task bench-http-clients -- -d 20 -c 128 # override duration / concurrency
 ```
 
 Builds and tears down its own stack (`compose.http-clients.yml`) — unrelated to `task bench`.
-
-## Layout
-
-```
-compose.base.yml          # Postgres + upstream + k6 runner (shared, no framework)
-compose.<fw>.yml          # one framework's service + its runner depends_on/env
-                           #   combine as: docker compose -f compose.base.yml -f compose.<fw>.yml up ...
-compose.http-clients.yml  # standalone: outbound HTTP client shootout (task bench-http-clients)
-bench.py                  # host orchestrator: loops --frameworks, one compose pair at a time
-export_results.py         # host script: prints the comparison tables for a past RUN_ID
-pyproject.toml            # host-side deps for bench.py/export_results.py (yeetr, peewee)
-Taskfile.yml              # `task bench` / `task export-results` / `task bench-http-clients`
-services/python/          # all Python frameworks: ONE pyproject, group per framework
-  pyproject.toml          #   [dependency-groups] jero = [...], fastapi = [...], ...
-  Dockerfile               #   multi-stage: one stage per framework, isolated venvs
-  apps/<fw>_app.py         #   one app module per single-file framework
-  django_app/               #   shared Django project: Ninja + Bolt variants
-  manage.py                 #   only needed to launch Bolt (`runbolt`)
-services/gin/              # Go / Gin service (multi-stage build)
-services/elysia/           # Bun / Elysia service
-services/spring-boot/      # Java / Spring Boot service (multi-stage Maven build)
-services/upstream/         # fast Rust (axum) static-JSON upstream for test 3
-services/http-clients/     # one-core shootout comparing outbound Python HTTP clients
-loadtest/                  # k6 + orchestration image (one framework per container run)
-  scenarios/testN.js       #   one script per test
-  lib/common.js            #   shared options, JWT minting, summary -> per-attempt JSON
-  run.py                   #   loops TESTS x RUNS for one framework, writes results/bench.db
-  pyproject.toml           #   in-container deps (peewee)
-results/
-  bench.db                 # SQLite: every run's every attempt (git-ignored)
-reports/
-  <run_id>/
-    report.md               # full report: tables, chart, exact run config, methodology
-    chart.svg               # the chart embedded in that report
-    results.json             # raw Run + every Result row (all attempts, not just is_best)
-```
 
 ## Adding a Python framework
 

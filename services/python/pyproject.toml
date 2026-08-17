@@ -82,6 +82,7 @@ django-ninja = [
     "uvloop",
     "rloop",
     "psycopg[binary,pool]",
+    "psqlpy",
     "pydantic-settings",
 ]
 django-bolt = [
@@ -91,5 +92,6 @@ django-bolt = [
     "pyjwt>=2.0",
     "pyreqwest",
     "psycopg[binary,pool]",
+    "psqlpy",
     "pydantic-settings",
 ]
