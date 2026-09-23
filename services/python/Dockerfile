@@ -59,6 +59,25 @@ COPY apps/robyn_app.py ./robyn_app.py
 EXPOSE 8000
 CMD ["sh", "-c", "python robyn_app.py --processes 1 --workers ${WORKERS:-1}"]
 
+# --- pyronova (own server) ---------------------------------------------------
+# PyPI only ships manylinux x86_64 wheels, so on linux/arm64 (Apple Silicon,
+# Graviton) uv builds it from the sdist: needs a Rust toolchain + C compiler.
+# Built in a throwaway stage so the runtime image carries only the venv.
+FROM base AS pyronova-build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=rust:1-slim-trixie /usr/local/cargo /usr/local/cargo
+COPY --from=rust:1-slim-trixie /usr/local/rustup /usr/local/rustup
+ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup \
+    PATH="/usr/local/cargo/bin:$PATH"
+RUN uv sync --locked --no-default-groups --group pyronova
+
+FROM base AS pyronova
+COPY --from=pyronova-build /app/.venv /app/.venv
+COPY apps/pyronova_app.py ./pyronova_app.py
+EXPOSE 8000
+CMD ["python", "pyronova_app.py"]
+
 # --- django-ninja (ASGI, via serve.sh) ---------------------------------------
 FROM base AS django-ninja
 RUN uv sync --locked --no-default-groups --group django-ninja

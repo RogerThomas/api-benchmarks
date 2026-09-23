@@ -231,5 +231,5 @@ type UserServiceDep = Annotated[UserService, Depends(_get_user_service)]
 
 
 @app.get("/users/me")
-async def users_me(user: UserDep, user_service: UserService) -> Profile:
+async def users_me(user: UserDep, user_service: UserServiceDep) -> Profile:
     return await user_service.get_profile(user.id)

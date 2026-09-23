@@ -12,8 +12,8 @@ version: "3"
 # runner) plus that framework's own compose.<fw>.yml, waits for the runner to
 # finish, tears the pair back down, then moves to the next framework — so no
 # two frameworks ever share a core or contend for host resources. Every
-# framework's results land in results/bench.db tagged with the shared
-# RUN_ID; `task export-results` reads that db back out.
+# framework's results land in TaglyDB tagged with the shared RUN_ID;
+# `task export-results` reads them back out.
 
 tasks:
   default:
@@ -21,7 +21,7 @@ tasks:
       - task: bench
 
   bench:
-    desc: 'Bench every framework (or --frameworks "a b") one at a time; results land in results/bench.db under one RUN_ID.'
+    desc: 'Bench every framework (or --frameworks "a b") one at a time; results land in TaglyDB under one RUN_ID.'
     cmds:
       - mkdir -p results
       - uv run yeet ./bench.py {{.CLI_ARGS}}
@@ -65,7 +65,7 @@ tasks:
             --abort-on-container-exit --exit-code-from bench
 
   clean:
-    desc: Remove the results database (all history, every run).
+    desc: Remove any leftover pre-TaglyDB local results database (results now live in TaglyDB, not here).
     cmd: rm -f results/bench.db
 
   format:

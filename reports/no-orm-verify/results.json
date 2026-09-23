@@ -1,0 +1,57 @@
+{
+  "run": {
+    "run_id": "no-orm-verify",
+    "created_at": "2026-08-16T19:05:11.640760",
+    "hostname": "NITRO-GY7N7RYTHK",
+    "vus": 10,
+    "duration": "5s",
+    "best_of": 1,
+    "workers": 1,
+    "python_server": "granian",
+    "ec2_ami_id": "",
+    "ec2_instance_type": "",
+    "aws_region": ""
+  },
+  "results": [
+    {
+      "framework": "django-bolt",
+      "test": "test4",
+      "attempt": 1,
+      "reqs_per_sec": 6251.1216,
+      "latency_avg_ms": 1.571494,
+      "latency_p50_ms": 1.509167,
+      "latency_p75_ms": 1.610625,
+      "latency_p90_ms": 1.78895,
+      "latency_p99_ms": 4.2607837,
+      "failed_rate": 0.0,
+      "total_requests": 31275,
+      "is_best": true,
+      "peak_rss_mb": 76.22,
+      "avg_rss_mb": 76.07,
+      "avg_cpu_pct": 92.346664,
+      "peak_cpu_pct": 100.99,
+      "cpu_spark": "\u2587\u2587\u2587\u2587\u2587\u2587\u2588\u2588\u2588\u2588\u2588\u2586\u2586\u2586\u2586\u2586",
+      "mem_spark": "\u2588\u2588\u2588\u2588\u2588\u2588\u2587\u2587\u2587\u2587\u2587\u2587\u2587\u2587\u2587\u2587"
+    },
+    {
+      "framework": "django-ninja",
+      "test": "test4",
+      "attempt": 1,
+      "reqs_per_sec": 1866.089,
+      "latency_avg_ms": 5.3239946,
+      "latency_p50_ms": 5.101833,
+      "latency_p75_ms": 5.641792,
+      "latency_p90_ms": 6.336833,
+      "latency_p99_ms": 11.768575,
+      "failed_rate": 0.0,
+      "total_requests": 9341,
+      "is_best": true,
+      "peak_rss_mb": 85.42,
+      "avg_rss_mb": 85.11,
+      "avg_cpu_pct": 99.706665,
+      "peak_cpu_pct": 99.97,
+      "cpu_spark": "\u2587\u2587\u2587\u2587\u2587\u2587\u2588\u2588\u2588\u2588\u2588\u2587\u2587\u2587\u2587\u2587",
+      "mem_spark": "\u2587\u2587\u2587\u2587\u2587\u2587\u2588\u2588\u2588\u2588\u2588\u2587\u2587\u2587\u2587\u2587"
+    }
+  ]
+}

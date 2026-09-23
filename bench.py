@@ -8,8 +8,8 @@ moving to the next framework — so no two frameworks ever share a core or
 contend for host resources (see README "Fairness").
 
 Every framework in one invocation shares a single RUN_ID (the kickoff
-timestamp); loadtest/run.py tags every row it writes into results/bench.db
-with it, which is what ties a run together across frameworks. At the end,
+timestamp); loadtest/run.py tags every item it writes into TaglyDB with
+it, which is what ties a run together across frameworks. At the end,
 this hands off to export_results.py to print the comparison tables.
 
     uv run yeet ./bench.py --frameworks "jero fastapi"
@@ -33,19 +33,12 @@ from yeetr import Opt
 class ResultsBackendSettings(BaseSettings):
     """Read from .env, then forwarded into the runner container's env (see
     compose.base.yml) — this is how loadtest/run.py and export_results.py end
-    up pointed at the same backend: Postgres (e.g. Neon) if PG_HOST is set,
-    else SQLite at SQLITE_PATH, else the local default."""
+    up pointed at the same TaglyDB principal. Only the API key is
+    secret/configurable; the base URL is fixed and inlined at every call site."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    pg_host: str | None = None
-    pg_port: int = 5432
-    pg_db: str | None = None
-    pg_user: str | None = None
-    pg_password: str | None = None
-    pg_sslmode: str = "require"
-    pg_channel_binding: str = "require"
-    sqlite_path: str | None = None
+    taglydb_api_key: str
 
 
 type PythonServer = Literal["granian", "uvicorn"]
@@ -57,6 +50,7 @@ type Framework = Literal[
     "flask",
     "blacksheep",
     "robyn",
+    "pyronova",
     "gin",
     "elysia",
     "spring-boot",
@@ -65,7 +59,7 @@ type Framework = Literal[
 ]
 
 # Frameworks that actually route through serve.sh and respect PYTHON_SERVER --
-# Flask is granian-only (WSGI), Robyn/Django Bolt ship their own server.
+# Flask is granian-only (WSGI), Robyn/Pyronova/Django Bolt ship their own server.
 ASGI_FRAMEWORKS = {"jero", "fastapi", "litestar", "blacksheep", "django-ninja"}
 
 
@@ -91,7 +85,7 @@ def main(
         ),
     ] = "",
     loop: Annotated[
-        EventLoop, Opt(help="Event loop (Robyn/Django Bolt ignore this, own server)")
+        EventLoop, Opt(help="Event loop (Robyn/Pyronova/Django Bolt ignore this, own server)")
     ] = "uvloop",
     run_id: Annotated[
         str,
@@ -117,7 +111,7 @@ def main(
 
     now = datetime.now(UTC)
     run_id = run_id or now.strftime("%Y%m%dT%H%M%S")
-    backend = ResultsBackendSettings()
+    backend = ResultsBackendSettings()  # pyright: ignore[reportCallIssue] -- fields come from .env, not the constructor
     env = {
         **os.environ,
         "RUN_ID": run_id,
@@ -136,14 +130,7 @@ def main(
         "EC2_AMI_ID": ec2_ami_id,
         "EC2_INSTANCE_TYPE": ec2_instance_type,
         "AWS_REGION": aws_region,
-        "PG_HOST": backend.pg_host or "",
-        "PG_PORT": str(backend.pg_port),
-        "PG_DB": backend.pg_db or "",
-        "PG_USER": backend.pg_user or "",
-        "PG_PASSWORD": backend.pg_password or "",
-        "PG_SSLMODE": backend.pg_sslmode,
-        "PG_CHANNEL_BINDING": backend.pg_channel_binding,
-        "SQLITE_PATH": backend.sqlite_path or "",
+        "TAGLYDB_API_KEY": backend.taglydb_api_key,
     }
 
     # Normally one (framework, server) pair per framework. When --python-servers

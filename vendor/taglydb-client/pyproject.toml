@@ -1,0 +1,97 @@
+[project]
+name = "taglydb"
+version = "0.1.0"
+description = "Python client for TaglyDB"
+readme = "README.md"
+authors = [{ name = "Roger Thomas", email = "roger.thomas@nitropdf.com" }]
+requires-python = ">=3.13"
+dependencies = [
+    "lothc[msgspec]>=0.0.14",
+    "python-dotenv>=1.2.3",
+    "rich>=15.0.0",
+    "yeetr>=2026.8.21",
+]
+
+[dependency-groups]
+dev = ["pyright>=1.1.400", "pytest>=8.3", "pytest-mock>=3.14", "ruff>=0.14"]
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "taglydb"
+
+[tool.pyright]
+include = ["src", "tests", "main.py", "full.py"]
+typeCheckingMode = "strict"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+fix = true
+
+[tool.ruff.lint]
+select = [
+    "A",   # builtins shadowing
+    "ANN", # type annotations
+    "ARG", # unused arguments
+    "B",   # bugbear (common bugs & bad patterns)
+    "BLE", # blind excepts
+    "C4",  # comprehensions
+    "DTZ", # datetime timezone
+    "E",   # pycodestyle errors
+    "ERA", # eradicate commented-out code
+    "FA",  # future annotations
+    "FBT", # boolean trap
+    "F",   # pyflakes
+    "I",   # import sorting
+    "ICN", # import conventions
+    "ISC", # implicit str concat
+    "N",   # naming conventions
+    "NPY", # numpy rules
+    "PGH", # pygrep-hooks
+    "PTH", # pathlib
+    "PT",  # pytest style
+    "RET", # return statements
+    "RUF", # Ruff extra rules
+    "TRY", # tryceratops
+    "S",   # security
+    "SIM", # simplifications
+    "C90", # mccabe complexity
+    "TID", # tidy imports
+    "TD",  # TODOs must be annotated
+    "UP",  # pyupgrade / newer syntax
+    "W",   # pycodestyle warnings
+    "YTT", # flake8-2020
+    "T10", # debugger statements
+    # Deliberately excluded: TC (flake8-type-checking) pushes TYPE_CHECKING-guarded imports and
+    # future-annotations-style forward refs — this project explicitly does not use
+    # `from __future__ import annotations` anywhere (PEP 649/749 makes it redundant on py314+).
+    # Also excluded: COM (trailing commas) — forces multi-line call/def sites to explode into
+    # one-arg-per-line once a trailing comma is added, which isn't wanted here.
+]
+ignore = [
+    "S101", # use of assert detected — needed everywhere pytest asserts are used
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/test*.py" = [
+    "ANN201", # missing return type annotation in tests
+    "E501",   # allow long lines in test docstrings / mock data
+    "S105",   # hardcoded passwords/tokens in tests
+    "S106",   # hardcoded secrets/tokens in tests
+]
+
+[tool.ruff.format]
+preview = true
+docstring-code-format = true
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not integration and not smoke'"
+markers = [
+    "integration: exercises a locally running TaglyDB Worker",
+    "smoke: exercises the deployed TaglyDB Worker",
+]

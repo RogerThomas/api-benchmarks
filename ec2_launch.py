@@ -1,7 +1,7 @@
 #!yeet
 """Launch a fire-and-forget EC2 benchmark run: a c9g.2xlarge in eu-central-1,
 built from the pre-warmed AMI (see the ec2-fire-and-forget-setup memory),
-runs `task bench`, uploads results to Neon and its log to S3, then
+runs `task bench`, uploads results to TaglyDB and its log to S3, then
 self-terminates. No SSH babysitting needed -- ./ec2_tail_logs.py watches it
 live, ./export_results.py reads the results back out once it's done.
 
@@ -22,8 +22,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class EC2Settings(BaseSettings):
     """Fire-and-forget EC2 runner infra -- standing resources, not secrets;
-    overridable via .env if the account/region/AMI ever changes. PG_*/
-    upstream_api_key ARE secrets, read from .env same as everywhere else."""
+    overridable via .env if the account/region/AMI ever changes.
+    taglydb_api_key/upstream_api_key ARE secrets, read from .env same as
+    everywhere else."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -37,10 +38,7 @@ class EC2Settings(BaseSettings):
     ec2_s3_bucket: str = "jero-benchmarks-751884348953"
     ec2_s3_bucket_region: str = "eu-west-2"
 
-    pg_host: str | None = None
-    pg_db: str | None = None
-    pg_user: str | None = None
-    pg_password: str | None = None
+    taglydb_api_key: str | None = None
     upstream_api_key: str = "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
 
 
@@ -90,10 +88,7 @@ def _render_user_data(settings: EC2Settings, *, bench_args: str) -> str:
     return (
         template
         .replace("__S3_BUCKET__", settings.ec2_s3_bucket)
-        .replace("__PG_USER__", settings.pg_user or "")
-        .replace("__PG_PASSWORD__", settings.pg_password or "")
-        .replace("__PG_HOST__", settings.pg_host or "")
-        .replace("__PG_DB__", settings.pg_db or "")
+        .replace("__TAGLYDB_API_KEY__", settings.taglydb_api_key or "")
         .replace("__UPSTREAM_API_KEY__", settings.upstream_api_key)
         .replace("__BENCH_ARGS__", bench_args)
     )
@@ -113,10 +108,9 @@ def main(
     spot: bool = False,
 ) -> None:
     settings = EC2Settings()
-    if not (settings.pg_host and settings.pg_user and settings.pg_password and settings.pg_db):
+    if not settings.taglydb_api_key:
         print(
-            "PG_HOST/PG_USER/PG_PASSWORD/PG_DB must all be set in .env -- "
-            "an EC2 run needs a shared results backend, not local SQLite.",
+            "TAGLYDB_API_KEY must be set in .env -- an EC2 run needs a shared results backend.",
             file=sys.stderr,
         )
         raise SystemExit(1)

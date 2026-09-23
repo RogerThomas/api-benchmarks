@@ -5,9 +5,8 @@ description = "Host-side orchestration for the benchmark suite (bench.py, export
 requires-python = ">=3.13"
 dependencies = [
     "yeetr>=2026.7.2.post4",
-    "peewee>=3.17",
+    "taglydb",
     "pydantic-settings>=2.0",
-    "psycopg[binary]>=3.1",
     "rich>=13.0",
     "plumbum>=2.0.2",
     "matplotlib>=3.11.1",
@@ -22,25 +21,24 @@ dev = [
 [tool.uv]
 package = false
 
+[tool.uv.sources]
+taglydb = { path = "vendor/taglydb-client" }
+
 # Repo-wide lint/format/type-check config (task lint / task format / task
 # typecheck). Ruff/pyright themselves live only in this root project's `dev`
 # group. Scoped to the host + in-container orchestration scripts for now —
 # services/** (each framework's own isolated venv) is excluded until we're
-# ready to tackle that separately. loadtest/run.py's deps (peewee,
-# pydantic-settings, psycopg) are also in this root venv, so pyright's
-# default venv auto-discovery (the `.venv` next to this file) already
-# resolves imports for both — no per-subtree executionEnvironments needed.
+# ready to tackle that separately. loadtest/run.py's deps (taglydb,
+# pydantic-settings) are also in this root venv, so pyright's default venv
+# auto-discovery (the `.venv` next to this file) already resolves imports for
+# both — no per-subtree executionEnvironments needed.
 [tool.pyright]
 include = ["bench.py", "export_results.py", "ec2_tail_logs.py", "ec2_launch.py", "loadtest"]
-exclude = ["**/__pycache__", "**/.venv", "**/node_modules", "**/target", "services"]
+exclude = ["**/__pycache__", "**/.venv", "**/node_modules", "**/target", "services", "vendor"]
 typeCheckingMode = "standard"
 pythonVersion = "3.13"
 reportUnusedExpression = "error"
 reportMissingTypeStubs = "warning"
-# peewee's Model.Meta nested-class pattern (every subclass redeclares Meta
-# with its own table_name) trips reportIncompatibleVariableOverride — that's
-# peewee's own idiom, not a real override bug.
-reportIncompatibleVariableOverride = "none"
 
 [tool.ruff]
 target-version = "py313"
@@ -96,6 +94,10 @@ ignore = [
 ]
 
 [tool.ruff.lint.flake8-type-checking]
+# pydantic(-settings) evaluates field annotations at runtime (validation/
+# parsing), so their imports can't be deferred into a TYPE_CHECKING block
+# the way a plain-typing-only import can.
+runtime-evaluated-base-classes = ["pydantic_settings.BaseSettings"]
 runtime-evaluated-decorators = [
     "fastapi.FastAPI.get",
     "fastapi.FastAPI.post",

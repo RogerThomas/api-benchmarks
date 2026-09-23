@@ -9,7 +9,7 @@
 # `task bench` (bench.py) drives this one framework at a time for every name
 # in $FRAMEWORKS, sharing one RUN_ID (the kickoff timestamp) across the whole
 # invocation so every framework's results land under the same run in
-# results/bench.db. Frameworks never run concurrently, so every one gets an
+# TaglyDB. Frameworks never run concurrently, so every one gets an
 # identical, contention-free environment — see README "Fairness".
 
 x-mem: &mem
@@ -60,7 +60,10 @@ services:
   # FRAMEWORK — both dict-typed fields, so they merge with what's defined
   # here rather than replacing it.
   runner:
-    build: { context: ./loadtest }
+    # Context is the repo root, not ./loadtest -- the runner's taglydb
+    # dependency is vendored at ./vendor and pulled in via a uv path source
+    # relative to loadtest/pyproject.toml (see loadtest/Dockerfile).
+    build: { context: ., dockerfile: loadtest/Dockerfile }
     deploy: *mem
     cpuset: "5,6"
     depends_on:
@@ -88,17 +91,10 @@ services:
       EC2_AMI_ID: ${EC2_AMI_ID:-}
       EC2_INSTANCE_TYPE: ${EC2_INSTANCE_TYPE:-}
       AWS_REGION: ${AWS_REGION:-}
-      # Results backend: bench.py reads these from .env and forwards them
-      # here. Postgres (e.g. Neon) if PG_HOST is set, else SQLite — see
-      # loadtest/run.py's Settings.build_database().
-      PG_HOST: ${PG_HOST:-}
-      PG_PORT: ${PG_PORT:-5432}
-      PG_DB: ${PG_DB:-}
-      PG_USER: ${PG_USER:-}
-      PG_PASSWORD: ${PG_PASSWORD:-}
-      PG_SSLMODE: ${PG_SSLMODE:-require}
-      PG_CHANNEL_BINDING: ${PG_CHANNEL_BINDING:-require}
-      SQLITE_PATH: ${SQLITE_PATH:-}
+      # Results backend: TaglyDB. bench.py reads this from .env and
+      # forwards it here — see loadtest/run.py's Tagly.build() call
+      # (base URL is inlined there, not env-configurable).
+      TAGLYDB_API_KEY: ${TAGLYDB_API_KEY:-}
     volumes:
       - ./results:/results
       # Read-only docker socket so the runner can `docker stats` the

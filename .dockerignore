@@ -1,0 +1,18 @@
+# Build context for the `runner` service only (compose.base.yml) -- every
+# other service builds from its own services/<name> subdirectory context.
+# loadtest/ and vendor/ are the only things loadtest/Dockerfile COPYs; the
+# rest just bloats the context sent to the daemon.
+.git
+.env
+.venv
+**/.venv
+**/__pycache__
+**/target
+**/node_modules
+results
+reports
+.claude
+.ruff_cache
+services
+ec2
+*.tar.gz

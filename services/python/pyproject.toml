@@ -72,6 +72,14 @@ robyn = [
     "psqlpy",
     "pydantic-settings",
 ]
+pyronova = [
+    "pyronova",
+    "pydantic",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "psqlpy",
+    "pydantic-settings",
+]
 django-ninja = [
     "django>=5.2",
     "django-ninja",

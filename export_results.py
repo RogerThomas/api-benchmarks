@@ -2,8 +2,8 @@
 """Prints the comparison tables for one `task bench` run: one box table per
 test, the best-of-N winner for each framework (Result.is_best), sorted by
 req/s descending, with "vs" columns normalized against jero (the fleet's
-baseline) — same shape the old table.awk produced, now reading
-results/bench.db instead of a report-<ts>.json file.
+baseline) — same shape the old table.awk produced, now reading TaglyDB
+instead of a report-<ts>.json file.
 
 Also writes a full markdown report (comparison tables + a chart SVG + the
 methodology and exact run config a future agent would need to reproduce or
@@ -17,111 +17,162 @@ to reports/<run_id>/{report.md,chart.svg,results.json}.
 
 import json
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
+from typing import Any
 
-import peewee
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from rich.console import Console
 from rich.table import Table
+from taglydb import Item, Tagly
 
 ROOT = Path(__file__).resolve().parent
 
+_RUNS_INDEX_KEY = "runs"
+_RESULTS_INDEX_KEY = "results"
+
 
 class Settings(BaseSettings):
-    """Results backend: Postgres (e.g. Neon) if PG_HOST is set in the
-    environment/.env, else SQLite at SQLITE_PATH, else the local default.
-    Same rule loadtest/run.py's Settings uses to pick a backend."""
+    """Results backend: TaglyDB, at a fixed base URL inlined in main()
+    below -- only the API key is secret/configurable. Same rule
+    loadtest/run.py's Settings uses to pick a backend."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    pg_host: str | None = None
-    pg_port: int = 5432
-    pg_db: str | None = None
-    pg_user: str | None = None
-    pg_password: str | None = None
-    pg_sslmode: str = "require"
-    pg_channel_binding: str = "require"
-    sqlite_path: str | None = None
+    taglydb_api_key: str
 
 
 @cache
 def _get_settings() -> Settings:
-    return Settings()
+    return Settings()  # pyright: ignore[reportCallIssue] -- fields come from .env, not the constructor
 
 
-@cache
-def _get_db() -> peewee.DatabaseProxy:
-    return peewee.DatabaseProxy()
+@dataclass
+class Run:
+    """One `task bench` invocation — shared by every framework it looped over."""
+
+    run_id: str
+    created_at: datetime
+    duration: str
+    vus: int
+    best_of: int
+    workers: int
+    python_server: str
+    loop: str | None
+    hostname: str | None
+    ec2_ami_id: str | None
+    ec2_instance_type: str | None
+    aws_region: str | None
 
 
-def _build_db(settings: Settings) -> peewee.Database:
-    if settings.pg_host:
-        return peewee.PostgresqlDatabase(
-            settings.pg_db,
-            host=settings.pg_host,
-            port=settings.pg_port,
-            user=settings.pg_user,
-            password=settings.pg_password,
-            sslmode=settings.pg_sslmode,
-            channel_binding=settings.pg_channel_binding,
-        )  # pyright: ignore[reportArgumentType] -- pg_db/user/password are only unset when pg_host is also unset
-    return peewee.SqliteDatabase(settings.sqlite_path or str(ROOT / "results" / "bench.db"))
+@dataclass
+class Result:
+    """One k6 attempt for (run, framework, test) — `is_best` marks the
+    highest-scoring attempt per (run, framework, test), the one this script
+    compares across frameworks."""
+
+    framework: str
+    test: str
+    attempt: int
+    reqs_per_sec: float
+    latency_avg_ms: float
+    latency_p50_ms: float
+    latency_p75_ms: float
+    latency_p90_ms: float
+    latency_p99_ms: float
+    failed_rate: float
+    total_requests: int
+    is_best: bool
+    peak_rss_mb: float | None
+    avg_rss_mb: float | None
+    avg_cpu_pct: float | None
+    peak_cpu_pct: float | None
+    cpu_spark: str | None
+    mem_spark: str | None
 
 
-def _describe(settings: Settings) -> str:
-    if settings.pg_host:
-        return f"postgres://{settings.pg_host}/{settings.pg_db}"
-    return settings.sqlite_path or str(ROOT / "results" / "bench.db")
+def _run_from_data(data: dict[str, Any]) -> Run:
+    return Run(
+        run_id=data["run_id"],
+        created_at=datetime.fromisoformat(data["created_at"]),
+        duration=data["duration"],
+        vus=data["vus"],
+        best_of=data["best_of"],
+        workers=data["workers"],
+        python_server=data["python_server"],
+        loop=data.get("loop"),
+        hostname=data.get("hostname"),
+        ec2_ami_id=data.get("ec2_ami_id"),
+        ec2_instance_type=data.get("ec2_instance_type"),
+        aws_region=data.get("aws_region"),
+    )
 
 
-class BaseModel(peewee.Model):
-    class Meta:
-        database = _get_db()
+def _result_from_data(data: dict[str, Any]) -> Result:
+    return Result(
+        framework=data["framework"],
+        test=data["test"],
+        attempt=data["attempt"],
+        reqs_per_sec=data["reqs_per_sec"],
+        latency_avg_ms=data["latency_avg_ms"],
+        latency_p50_ms=data["latency_p50_ms"],
+        latency_p75_ms=data["latency_p75_ms"],
+        latency_p90_ms=data["latency_p90_ms"],
+        latency_p99_ms=data["latency_p99_ms"],
+        failed_rate=data["failed_rate"],
+        total_requests=data["total_requests"],
+        is_best=data["is_best"],
+        peak_rss_mb=data.get("peak_rss_mb"),
+        avg_rss_mb=data.get("avg_rss_mb"),
+        avg_cpu_pct=data.get("avg_cpu_pct"),
+        peak_cpu_pct=data.get("peak_cpu_pct"),
+        cpu_spark=data.get("cpu_spark"),
+        mem_spark=data.get("mem_spark"),
+    )
 
 
-class Run(BaseModel):
-    run_id = peewee.CharField(primary_key=True)
-    created_at = peewee.DateTimeField()
-    duration = peewee.CharField()
-    vus = peewee.IntegerField()
-    best_of = peewee.IntegerField()
-    workers = peewee.IntegerField()
-    python_server = peewee.CharField()
-    loop = peewee.CharField(null=True)
-    hostname = peewee.CharField(null=True)
-    ec2_ami_id = peewee.CharField(null=True)
-    ec2_instance_type = peewee.CharField(null=True)
-    aws_region = peewee.CharField(null=True)
-
-    class Meta:
-        table_name = "runs"
+def _find_index(client: Tagly, key: str) -> str | None:
+    items = client.indexes.list(key=key).items
+    return items[0].id if items else None
 
 
-class Result(BaseModel):
-    run = peewee.ForeignKeyField(Run, backref="results", field="run_id", column_name="run_id")
-    framework = peewee.CharField()
-    test = peewee.CharField()
-    attempt = peewee.IntegerField()
-    reqs_per_sec = peewee.FloatField()
-    latency_avg_ms = peewee.FloatField()
-    latency_p50_ms = peewee.FloatField()
-    latency_p75_ms = peewee.FloatField()
-    latency_p90_ms = peewee.FloatField()
-    latency_p99_ms = peewee.FloatField()
-    failed_rate = peewee.FloatField()
-    total_requests = peewee.IntegerField()
-    is_best = peewee.BooleanField()
-    peak_rss_mb = peewee.FloatField(null=True)
-    avg_rss_mb = peewee.FloatField(null=True)
-    avg_cpu_pct = peewee.FloatField(null=True)
-    peak_cpu_pct = peewee.FloatField(null=True)
-    cpu_spark = peewee.CharField(null=True)
-    mem_spark = peewee.CharField(null=True)
+def _list_all_items(
+    client: Tagly, index_id: str, *, tags: dict[str, str] | None = None
+) -> list[Item]:
+    items: list[Item] = []
+    cursor: str | None = None
+    while True:
+        page = client.items.list(index_id, limit=250, cursor=cursor, tags=tags)
+        items += page.items
+        if not page.next_cursor:
+            return items
+        cursor = page.next_cursor
 
-    class Meta:
-        table_name = "results"
+
+def _fetch_run(client: Tagly, runs_index_id: str, run_id: str) -> Run | None:
+    matches = client.items.list(runs_index_id, key=run_id).items
+    if not matches:
+        return None
+    return _run_from_data(client.items.get_json(runs_index_id, matches[0].id))  # pyright: ignore[reportArgumentType]
+
+
+def _fetch_results(client: Tagly, results_index_id: str, run_id: str) -> list[Result]:
+    """Every attempt is written under a random item key (not a deterministic
+    (run, framework, test, attempt) composite), so a rerun of the same
+    attempt lands as a second item rather than a 409 -- resolve that here by
+    keeping only the newest (by the item's own createdAt) per
+    (framework, test, attempt) group, rather than every item verbatim."""
+    items = _list_all_items(client, results_index_id, tags={"run_id": run_id})
+    newest: dict[tuple[str, str, int], tuple[datetime, Result]] = {}
+    for item in items:
+        result = _result_from_data(client.items.get_json(results_index_id, item.id))  # pyright: ignore[reportArgumentType]
+        group = (result.framework, result.test, result.attempt)
+        current = newest.get(group)
+        if current is None or item.created_at > current[0]:
+            newest[group] = (item.created_at, result)
+    return [result for _, result in newest.values()]
 
 
 TEST_LABELS = {
@@ -278,6 +329,15 @@ FRAMEWORK_FACTS: dict[str, dict[str, str]] = {
         "http_client": "pyreqwest",
         "db_driver": "psqlpy",
         "validates_body": "pydantic (native param)",
+        "parses_upstream": "typed (pydantic)",
+        "serializer": "stdlib json / pydantic",
+    },
+    "pyronova": {
+        "language": "Python 3.13",
+        "server": "built-in Rust server (gil mode)",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "pydantic (native model=)",
         "parses_upstream": "typed (pydantic)",
         "serializer": "stdlib json / pydantic",
     },
@@ -666,17 +726,11 @@ def _result_to_dict(r: Result) -> dict[str, object]:
     }
 
 
-def _write_results_json(run: Run, json_path: Path) -> None:
+def _write_results_json(run: Run, all_results: list[Result], json_path: Path) -> None:
     """The raw data backing the report: every attempt of every (framework,
     test) pair in this run -- not just the is_best winners the markdown
     tables show -- so the best-of-N selection can be reprocessed or verified
     independently."""
-    all_results = list(
-        Result
-        .select()
-        .where(Result.run == run.run_id)
-        .order_by(Result.framework, Result.test, Result.attempt)
-    )
     payload = {
         "run": _run_to_dict(run),
         "results": [_result_to_dict(r) for r in all_results],
@@ -685,7 +739,11 @@ def _write_results_json(run: Run, json_path: Path) -> None:
 
 
 def _write_report(
-    run: Run, tests: list[str], results_by_test: dict[str, list[Result]], destination: str
+    run: Run,
+    tests: list[str],
+    results_by_test: dict[str, list[Result]],
+    all_results: list[Result],
+    destination: str,
 ) -> Path:
     run_dir = ROOT / "reports" / run.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -695,97 +753,108 @@ def _write_report(
 
     _build_chart_svg(tests, results_by_test, svg_path)
     md_path.write_text(_render_report(run, tests, results_by_test, destination, svg_path.name))
-    _write_results_json(run, json_path)
+    _write_results_json(run, all_results, json_path)
     return md_path
 
 
-def _pick_run(destination: str) -> str:
+def _pick_run(client: Tagly, runs_index_id: str, destination: str) -> str:
     """No run_id given: list the most recent runs with a single base36
     character label each (0-9, a-z — 36 max, so one keypress always
-    identifies one) and prompt for a pick."""
-    # Fetch the 36 most recent so a busy DB doesn't bury today's runs under
-    # old ones, then re-sort that set oldest to newest for display.
-    runs = list(Run.select().order_by(Run.created_at.desc()).limit(36))
-    if not runs:
+    identifies one) and prompt for a pick.
+
+    Uses each run item's own TaglyDB metadata (id/createdAt/hostname tag)
+    rather than fetching every run's full JSON data -- TaglyDB orders item
+    listing by id ascending (creation order), which is what createdAt sorts
+    by here too, so this needs one paginated metadata-only listing.
+    """
+    items = _list_all_items(client, runs_index_id)
+    if not items:
         print(f"no runs found in {destination}", file=sys.stderr)
         raise SystemExit(1)
-    runs.sort(key=lambda r: r.created_at)
+    items.sort(key=lambda it: it.created_at, reverse=True)
+    recent = items[:36]
+    recent.sort(key=lambda it: it.created_at)
 
     table = Table(title=f"runs in {destination}")
     table.add_column("#", style="bold cyan", justify="center")
     table.add_column("run_id", style="bold")
     table.add_column("host")
     table.add_column("created_at")
-    for label, run in zip("0123456789abcdefghijklmnopqrstuvwxyz", runs, strict=False):
+    for label, item in zip("0123456789abcdefghijklmnopqrstuvwxyz", recent, strict=False):
         table.add_row(
             label,
-            run.run_id,
-            run.hostname or "unknown host",
-            run.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            item.key,
+            item.tags.get("hostname") or "unknown host",
+            item.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         )
     Console().print(table)
 
     choice = input("pick a run: ").strip().lower()
     index = "0123456789abcdefghijklmnopqrstuvwxyz".find(choice)
-    if index < 0 or index >= len(runs):
+    if index < 0 or index >= len(recent):
         print(f"invalid pick: {choice!r}", file=sys.stderr)
         raise SystemExit(1)
-    return runs[index].run_id
+    picked_key = recent[index].key
+    assert picked_key is not None, "every runs-index item is always written with key=run_id"
+    return picked_key
 
 
 def main(run_id: str = "") -> None:
     settings = _get_settings()
-    destination = _describe(settings)
-    if not settings.pg_host and not Path(destination).exists():
-        print(f"no results database at {destination}", file=sys.stderr)
-        raise SystemExit(1)
+    destination = "TaglyDB"
 
-    db = _get_db()
-    db.initialize(_build_db(settings))
-    db.connect()
+    with Tagly.build(
+        base_url="https://api.taglydb.com", api_key=settings.taglydb_api_key
+    ) as client:
+        runs_index_id = _find_index(client, _RUNS_INDEX_KEY)
+        if runs_index_id is None:
+            print(f"no runs recorded yet in {destination}", file=sys.stderr)
+            raise SystemExit(1)
 
-    if not run_id:
-        run_id = _pick_run(destination)
+        if not run_id:
+            run_id = _pick_run(client, runs_index_id, destination)
 
-    run = Run.get_or_none(Run.run_id == run_id)
-    if run is None:
-        print(f"no run {run_id!r} in {destination}", file=sys.stderr)
-        recent = list(Run.select().order_by(Run.created_at.desc()).limit(10))
-        if recent:
-            print("most recent runs:", file=sys.stderr)
-            for r in recent:
-                print(f"  {r.run_id}  ({r.hostname or 'unknown host'})", file=sys.stderr)
-        raise SystemExit(1)
+        run = _fetch_run(client, runs_index_id, run_id)
+        if run is None:
+            print(f"no run {run_id!r} in {destination}", file=sys.stderr)
+            recent = sorted(
+                _list_all_items(client, runs_index_id), key=lambda it: it.created_at, reverse=True
+            )[:10]
+            if recent:
+                print("most recent runs:", file=sys.stderr)
+                for it in recent:
+                    print(
+                        f"  {it.key}  ({it.tags.get('hostname') or 'unknown host'})",
+                        file=sys.stderr,
+                    )
+            raise SystemExit(1)
 
-    print(
-        f"jero-benchmarks · run {run.run_id} · host {run.hostname or 'unknown'} · "
-        f"py:{run.python_server}/{run.loop or 'uvloop'} · {run.vus} VUs · {run.duration}/test · "
-        f"best-of-{run.best_of} · {run.workers} worker(s) · results -> {destination}"
-    )
-
-    tests = [
-        r.test
-        for r in Result
-        .select(Result.test)
-        .where(Result.run == run_id)
-        .distinct()
-        .order_by(Result.test)
-    ]
-    results_by_test: dict[str, list[Result]] = {}
-    for test in tests:
-        results = list(
-            Result
-            .select()
-            .where((Result.run == run_id) & (Result.test == test) & (Result.is_best == True))  # noqa: E712
-            .order_by(Result.reqs_per_sec.desc())
+        print(
+            f"jero-benchmarks · run {run.run_id} · host {run.hostname or 'unknown'} · "
+            f"py:{run.python_server}/{run.loop or 'uvloop'} · {run.vus} VUs · "
+            f"{run.duration}/test · best-of-{run.best_of} · {run.workers} worker(s) · "
+            f"results -> {destination}"
         )
-        if not results:
-            continue
-        results_by_test[test] = results
-        print()
-        for line in _render_table(test, results):
-            print(line)
 
-    if results_by_test:
-        report_path = _write_report(run, tests, results_by_test, destination)
-        print(f"\n==> wrote report to {report_path}")
+        results_index_id = _find_index(client, _RESULTS_INDEX_KEY)
+        all_results = _fetch_results(client, results_index_id, run_id) if results_index_id else []
+        all_results.sort(key=lambda r: (r.framework, r.test, r.attempt))
+
+        tests = sorted({r.test for r in all_results})
+        results_by_test: dict[str, list[Result]] = {}
+        for test in tests:
+            results = sorted(
+                (r for r in all_results if r.test == test and r.is_best),
+                key=lambda r: r.reqs_per_sec,
+                reverse=True,
+            )
+            if not results:
+                continue
+            results_by_test[test] = results
+            print()
+            for line in _render_table(test, results):
+                print(line)
+
+        if results_by_test:
+            report_path = _write_report(run, tests, results_by_test, all_results, destination)
+            print(f"\n==> wrote report to {report_path}")

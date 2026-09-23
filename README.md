@@ -28,8 +28,8 @@ task export-results -- 20260813T120000         # re-print a past run's tables
 each name in `--frameworks`, brings up `compose.base.yml` (Postgres + the upstream + the
 k6 runner) plus that framework's own `compose.<fw>.yml`, waits for the runner to finish
 every test, tears the pair back down, then moves to the next framework. Every
-framework's results land in `results/bench.db` (SQLite) tagged with the shared RUN_ID —
-that's what ties a multi-framework run together. At the end, `bench.py` hands off to
+framework's results land in [TaglyDB](https://api.taglydb.com) tagged with the
+shared RUN_ID — that's what ties a multi-framework run together. At the end, `bench.py` hands off to
 `export_results.py` to print the comparison tables and write a full report — tables, a
 chart SVG, exact run config (VUs/duration/AMI/region if run on EC2), and the methodology
 — plus the raw underlying results as JSON, to `reports/<run_id>/`; re-run it standalone
@@ -42,7 +42,7 @@ for the full list.
 
 Every (framework, test) pair runs `RUNS` times (default **3**) — smoothing out noise —
 and the attempt with the highest req/s is kept. That's what the comparison tables use;
-every attempt is still in `results/bench.db` (`results.is_best` marks the winner) for
+every attempt is still recorded in TaglyDB (tagged `is_best` for the winner) for
 transparency.
 
 Other knobs (CLI flags — see `uv run yeet ./bench.py --help`): `--vus` (k6 concurrency,
@@ -57,8 +57,8 @@ contention to pin apart (see Fairness).
 
 At the end of a run it prints one table per test — throughput, latency, success rate,
 and per-container resource use (CPU/mem + sparklines), rows sorted by req/s with
-vs-jero multipliers — and every attempt is recorded in `results/bench.db`. See
-`results/FINAL-*.md` for examples of the format from earlier (pre-SQLite) runs; a
+vs-jero multipliers — and every attempt is recorded in TaglyDB. See
+`results/FINAL-*.md` for examples of the format from earlier (pre-TaglyDB) runs; a
 trimmed row looks like:
 
 ```
@@ -74,14 +74,14 @@ trimmed row looks like:
 | --- | --- | --- | --- | --- |
 | jero, FastAPI, Litestar, Blacksheep, Django Ninja | Python 3.13 | granian ASGI (`--loop uvloop`) | pyreqwest | psqlpy |
 | Flask | Python 3.13 | granian WSGI | pyreqwest (sync) | psycopg |
-| Robyn, Django Bolt | Python 3.13 | built-in Rust server (Bolt: `manage.py runbolt`) | pyreqwest | psqlpy |
+| Robyn, Pyronova, Django Bolt | Python 3.13 | built-in Rust server (Bolt: `manage.py runbolt`; Pyronova in `gil` mode) | pyreqwest | psqlpy |
 | Gin | Go | net/http (`GOMAXPROCS=1`) | net/http | pgx |
 | Elysia | Bun / TS | Bun native | `fetch` | Bun `SQL` |
 | Spring Boot | Java 25 | embedded Tomcat, virtual threads | RestClient (Apache HttpClient5) | JdbcTemplate (HikariCP) |
 
 All apps use idiomatic, framework-recommended code (no deep optimisations). The Python
 ASGI frameworks share granian as the server so the variable under test is the
-*framework*, not the server (switch to uvicorn with `--python-server uvicorn` — Robyn and
+*framework*, not the server (switch to uvicorn with `--python-server uvicorn` — Robyn, Pyronova and
 Django Bolt ship their own servers and ignore this knob). The two Django frameworks query
 the shared `users` table with raw psqlpy — the same driver every other async framework in
 this fleet uses — rather than Django's ORM or a different raw driver; either would be
@@ -94,6 +94,11 @@ has no `manylinux_aarch64` (Linux/arm64) wheel for CPython 3.14 yet, only for 3.
 runs natively rather than emulated. (Checked 2026-08-10: Robyn 0.88.0 ships a cp314
 wheel for macOS and manylinux x86_64, but still not aarch64 Linux.) Once that wheel
 lands, bump the base image back to 3.14.
+
+**Pyronova** runs in `mode="gil"`, meaning all handlers run on the main interpreter. Its
+default sub-interpreter mode can't load the shared C extensions (with 2.7.0, pydantic-core
+raises and pyreqwest hangs). It has no `manylinux_aarch64` wheel either, so its
+Dockerfile stage builds it from the sdist with a Rust toolchain.
 
 ## Tests
 
@@ -171,6 +176,7 @@ The goal is *idiomatic per framework*, held to equal conditions and made scrutab
   | Litestar | msgspec Struct | typed (msgspec) | msgspec |
   | Blacksheep | dataclass bind | passthrough dict | orjson |
   | Robyn | pydantic (native param) | typed (pydantic) | stdlib `json` / pydantic |
+  | Pyronova | pydantic (native `model=`) | typed (pydantic) | stdlib `json` / pydantic |
   | Flask | pydantic | typed (pydantic) | stdlib `json` |
   | Django Ninja | pydantic (Schema) | passthrough bytes | pydantic |
   | Django Bolt | msgspec Struct | passthrough bytes | msgspec |

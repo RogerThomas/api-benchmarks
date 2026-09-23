@@ -1,8 +1,8 @@
 #!/bin/bash
 # Fire-and-forget EC2 runner: pulls the code from S3, writes a fresh .env
-# (Neon results-backend creds only -- AWS auth comes from the instance's IAM
-# profile, never from here), runs `task bench`, uploads the log to S3, then
-# self-terminates. Rendered from this template by ec2_launch.py, which
+# (TaglyDB results-backend key only -- AWS auth comes from the instance's
+# IAM profile, never from here), runs `task bench`, uploads the log to S3,
+# then self-terminates. Rendered from this template by ec2_launch.py, which
 # replaces every __TOKEN__ below with a real value -- never edit those in
 # place, they're plain string substitutions, not bash variables.
 set -euo pipefail
@@ -21,10 +21,7 @@ tar xzf jero-benchmarks.tar.gz
 cd jero-benchmarks
 
 cat > .env <<ENVEOF
-PG_USER=__PG_USER__
-PG_PASSWORD=__PG_PASSWORD__
-PG_HOST=__PG_HOST__
-PG_DB=__PG_DB__
+TAGLYDB_API_KEY=__TAGLYDB_API_KEY__
 UPSTREAM_API_KEY=__UPSTREAM_API_KEY__
 ENVEOF
 

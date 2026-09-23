@@ -4,9 +4,9 @@
 Each `docker compose -f compose.base.yml -f compose.<fw>.yml up` cycle starts
 exactly one framework; this script benches *that* framework only (env
 FRAMEWORK), looping TESTS x RUNS attempts through k6, keeping the best
-attempt per test, and writing every attempt into results/bench.db under the
-RUN_ID the host-side bench.py orchestrator generated at kickoff — that's what
-ties every framework's slice of a `task bench` invocation back together.
+attempt per test, and writing every attempt into TaglyDB under the RUN_ID
+the host-side bench.py orchestrator generated at kickoff — that's what ties
+every framework's slice of a `task bench` invocation back together.
 
 "Best" = highest composite score, equally weighting throughput and latency,
 each metric normalized against the best of that test's attempts:
@@ -19,23 +19,23 @@ import os
 import shutil
 import tempfile
 import threading
+from contextlib import suppress
 from datetime import datetime
 from functools import cache
 from pathlib import Path
 
-import peewee
 from plumbum import FG, local
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from taglydb import ConflictError, Tagly
 
 
 class Settings(BaseSettings):
     """Runner config, read from the process env docker compose injects (see
     compose.base.yml's `runner.environment`) — never read raw os.environ.
 
-    Results backend: Postgres (e.g. Neon) if PG_HOST is set, else SQLite at
-    SQLITE_PATH, else the local default under RESULTS_DIR. This is the same
-    "Postgres if configured, else local SQLite" rule export_results.py and
-    bench.py use — see their own Settings classes.
+    Results backend: TaglyDB, at a fixed base URL inlined in main() below --
+    only the API key is secret/configurable, same as export_results.py and
+    bench.py's own Settings classes.
     """
 
     model_config = SettingsConfigDict(extra="ignore")
@@ -57,14 +57,7 @@ class Settings(BaseSettings):
     ec2_instance_type: str | None = None
     aws_region: str | None = None
 
-    pg_host: str | None = None
-    pg_port: int = 5432
-    pg_db: str | None = None
-    pg_user: str | None = None
-    pg_password: str | None = None
-    pg_sslmode: str = "require"
-    pg_channel_binding: str = "require"
-    sqlite_path: str | None = None
+    taglydb_api_key: str
 
 
 @cache
@@ -72,85 +65,52 @@ def _get_settings() -> Settings:
     return Settings()  # pyright: ignore[reportCallIssue] -- fields come from the process env, not the constructor
 
 
-def _build_db(settings: Settings) -> peewee.Database:
-    if settings.pg_host:
-        return peewee.PostgresqlDatabase(
-            settings.pg_db,
-            host=settings.pg_host,
-            port=settings.pg_port,
-            user=settings.pg_user,
-            password=settings.pg_password,
-            sslmode=settings.pg_sslmode,
-            channel_binding=settings.pg_channel_binding,
-        )  # pyright: ignore[reportArgumentType] -- pg_db/user/password are only unset when pg_host is also unset
-    return peewee.SqliteDatabase(
-        settings.sqlite_path or str(settings.results_dir / "bench.db"),
-        pragmas={"busy_timeout": 30000},
-    )
+# TaglyDB indexes are permanent, principal-scoped containers -- created
+# once, then reused by every run. "Runs" holds one JSON item per RUN_ID;
+# "results" holds one JSON item per (run, framework, test, attempt).
+_RUNS_INDEX_KEY = "runs"
+_RESULTS_INDEX_KEY = "results"
 
 
-@cache
-def _get_db() -> peewee.DatabaseProxy:
-    # A proxy, not a real connection: the actual backend (Postgres or
-    # SQLite) isn't known until Settings is read, but Model.Meta.database
-    # needs *something* bound at class-definition time — db.initialize()
-    # swaps in the real Database once main() has read the settings.
-    return peewee.DatabaseProxy()
+def _ensure_index(client: Tagly, key: str) -> str:
+    existing = client.indexes.list(key=key).items
+    if existing:
+        return existing[0].id
+    try:
+        return client.indexes.create(key=key, type="json", tags={}).id
+    except ConflictError:
+        # Lost a race with another framework's runner container -- fine,
+        # whichever created it first wins, both point at the same key.
+        return client.indexes.list(key=key).items[0].id
 
 
-class BaseModel(peewee.Model):
-    class Meta:
-        database = _get_db()
-
-
-class Run(BaseModel):
-    """One `task bench` invocation — shared by every framework it looped over."""
-
-    run_id = peewee.CharField(primary_key=True)
-    created_at = peewee.DateTimeField()
-    duration = peewee.CharField()
-    vus = peewee.IntegerField()
-    best_of = peewee.IntegerField()
-    workers = peewee.IntegerField()
-    python_server = peewee.CharField()
-    loop = peewee.CharField(null=True)
-    hostname = peewee.CharField(null=True)
-    ec2_ami_id = peewee.CharField(null=True)
-    ec2_instance_type = peewee.CharField(null=True)
-    aws_region = peewee.CharField(null=True)
-
-    class Meta:
-        table_name = "runs"
-
-
-class Result(BaseModel):
-    """One k6 attempt for (run, framework, test) — `is_best` marks the
-    highest-scoring attempt per (run, framework, test), the one export_results.py
-    compares across frameworks."""
-
-    run = peewee.ForeignKeyField(Run, backref="results", field="run_id", column_name="run_id")
-    framework = peewee.CharField()
-    test = peewee.CharField()
-    attempt = peewee.IntegerField()
-    reqs_per_sec = peewee.FloatField()
-    latency_avg_ms = peewee.FloatField()
-    latency_p50_ms = peewee.FloatField()
-    latency_p75_ms = peewee.FloatField()
-    latency_p90_ms = peewee.FloatField()
-    latency_p99_ms = peewee.FloatField()
-    failed_rate = peewee.FloatField()
-    total_requests = peewee.IntegerField()
-    is_best = peewee.BooleanField()
-    peak_rss_mb = peewee.FloatField(null=True)
-    avg_rss_mb = peewee.FloatField(null=True)
-    avg_cpu_pct = peewee.FloatField(null=True)
-    peak_cpu_pct = peewee.FloatField(null=True)
-    cpu_spark = peewee.CharField(null=True)
-    mem_spark = peewee.CharField(null=True)
-
-    class Meta:
-        table_name = "results"
-        indexes = ((("run", "framework", "test", "attempt"), True),)
+def _write_run(client: Tagly, runs_index_id: str, settings: Settings) -> None:
+    """One item per RUN_ID, shared by every framework that run looped over --
+    the TaglyDB item-key uniqueness (and 409 on a duplicate key) makes this
+    idempotent across frameworks/backfills, matching the old Run.get_or_create."""
+    if client.items.list(runs_index_id, key=settings.run_id).items:
+        return
+    data = {
+        "run_id": settings.run_id,
+        "created_at": settings.run_created_at.isoformat(),
+        "duration": settings.duration,
+        "vus": int(settings.vus),
+        "best_of": settings.runs,
+        "workers": settings.workers,
+        "python_server": settings.python_server,
+        "loop": settings.loop,
+        "hostname": settings.bench_hostname,
+        "ec2_ami_id": settings.ec2_ami_id,
+        "ec2_instance_type": settings.ec2_instance_type,
+        "aws_region": settings.aws_region,
+    }
+    with suppress(ConflictError):  # another framework in this run just beat us to it
+        client.items.create_json(
+            runs_index_id,
+            key=settings.run_id,
+            tags={"hostname": settings.bench_hostname or ""},
+            data=data,
+        )
 
 
 def _container_id(service: str) -> str | None:
@@ -287,99 +247,67 @@ def _bench_test(test: str, work_dir: Path) -> list[dict]:
     return attempts
 
 
-def _insert_results(test: str, attempts: list[dict]) -> None:
+def _insert_results(client: Tagly, results_index_id: str, test: str, attempts: list[dict]) -> None:
     settings = _get_settings()
+    framework = settings.result_label or settings.framework
     for a in attempts:
-        # insert().on_conflict(conflict_target=..., preserve=...) — the
-        # portable upsert across SQLite and Postgres. peewee's .replace()
-        # shortcut only works on SQLite/MySQL (INSERT OR REPLACE has no
-        # Postgres equivalent); this compiles to ON CONFLICT ... DO UPDATE
-        # on both. The unique index on (run, framework, test, attempt)
-        # makes reruns idempotent either way.
-        Result.insert(
-            run=settings.run_id,
-            framework=settings.result_label or settings.framework,
-            test=test,
-            attempt=a["attempt"],
-            reqs_per_sec=a["reqsPerSec"],
-            latency_avg_ms=a["latencyMs"]["avg"],
-            latency_p50_ms=a["latencyMs"]["p50"],
-            latency_p75_ms=a["latencyMs"]["p75"],
-            latency_p90_ms=a["latencyMs"]["p90"],
-            latency_p99_ms=a["latencyMs"]["p99"],
-            failed_rate=a["failedRate"],
-            total_requests=a["totalRequests"],
-            is_best=a["is_best"],
-            peak_rss_mb=a.get("peak_rss_mb"),
-            avg_rss_mb=a.get("avg_rss_mb"),
-            avg_cpu_pct=a.get("avg_cpu_pct"),
-            peak_cpu_pct=a.get("peak_cpu_pct"),
-            cpu_spark=a.get("cpu_spark"),
-            mem_spark=a.get("mem_spark"),
-        ).on_conflict(
-            conflict_target=[Result.run, Result.framework, Result.test, Result.attempt],
-            preserve=[
-                Result.reqs_per_sec,
-                Result.latency_avg_ms,
-                Result.latency_p50_ms,
-                Result.latency_p75_ms,
-                Result.latency_p90_ms,
-                Result.latency_p99_ms,
-                Result.failed_rate,
-                Result.total_requests,
-                Result.is_best,
-                Result.peak_rss_mb,
-                Result.avg_rss_mb,
-                Result.avg_cpu_pct,
-                Result.peak_cpu_pct,
-                Result.cpu_spark,
-                Result.mem_spark,
-            ],
-        ).execute()
+        # No key -- TaglyDB items don't require one, and a natural
+        # (run, framework, test, attempt) key would just make a rerun of the
+        # exact same attempt 409 instead of writing a normal new item.
+        # export_results.py resolves reruns of the same attempt by taking
+        # the newest createdAt per (framework, test, attempt) group.
+        data = {
+            "run_id": settings.run_id,
+            "framework": framework,
+            "test": test,
+            "attempt": a["attempt"],
+            "reqs_per_sec": a["reqsPerSec"],
+            "latency_avg_ms": a["latencyMs"]["avg"],
+            "latency_p50_ms": a["latencyMs"]["p50"],
+            "latency_p75_ms": a["latencyMs"]["p75"],
+            "latency_p90_ms": a["latencyMs"]["p90"],
+            "latency_p99_ms": a["latencyMs"]["p99"],
+            "failed_rate": a["failedRate"],
+            "total_requests": a["totalRequests"],
+            "is_best": a["is_best"],
+            "peak_rss_mb": a.get("peak_rss_mb"),
+            "avg_rss_mb": a.get("avg_rss_mb"),
+            "avg_cpu_pct": a.get("avg_cpu_pct"),
+            "peak_cpu_pct": a.get("peak_cpu_pct"),
+            "cpu_spark": a.get("cpu_spark"),
+            "mem_spark": a.get("mem_spark"),
+        }
+        tags = {
+            "run_id": settings.run_id,
+            "framework": framework,
+            "test": test,
+            "is_best": "true" if a["is_best"] else "false",
+        }
+        client.items.create_json(results_index_id, tags=tags, data=data)
 
 
 def main() -> None:
     settings = _get_settings()
     settings.results_dir.mkdir(parents=True, exist_ok=True)
-    destination = (
-        f"postgres://{settings.pg_host}/{settings.pg_db}"
-        if settings.pg_host
-        else settings.sqlite_path or str(settings.results_dir / "bench.db")
-    )
     display = settings.result_label or settings.framework
     print(
         f"==> {display} · py:{settings.python_server}/{settings.loop} · "
         f"{settings.vus} VUs · {settings.duration}/test · best-of-{settings.runs} · "
-        f"{settings.workers} worker(s) · run {settings.run_id} · results -> {destination}"
+        f"{settings.workers} worker(s) · run {settings.run_id} · results -> TaglyDB"
     )
 
-    db = _get_db()
-    db.initialize(_build_db(settings))
-    db.connect()
-    db.create_tables([Run, Result])
-    Run.get_or_create(
-        run_id=settings.run_id,
-        defaults={
-            "created_at": settings.run_created_at,
-            "duration": settings.duration,
-            "vus": int(settings.vus),
-            "best_of": settings.runs,
-            "workers": settings.workers,
-            "python_server": settings.python_server,
-            "loop": settings.loop,
-            "hostname": settings.bench_hostname,
-            "ec2_ami_id": settings.ec2_ami_id,
-            "ec2_instance_type": settings.ec2_instance_type,
-            "aws_region": settings.aws_region,
-        },
-    )
+    with Tagly.build(
+        base_url="https://api.taglydb.com", api_key=settings.taglydb_api_key
+    ) as client:
+        runs_index_id = _ensure_index(client, _RUNS_INDEX_KEY)
+        results_index_id = _ensure_index(client, _RESULTS_INDEX_KEY)
+        _write_run(client, runs_index_id, settings)
 
-    work_dir = Path(tempfile.mkdtemp(prefix="bench-"))
-    try:
-        for test in settings.tests.split():
-            _insert_results(test, _bench_test(test, work_dir))
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        db.close()
+        work_dir = Path(tempfile.mkdtemp(prefix="bench-"))
+        try:
+            for test in settings.tests.split():
+                _insert_results(client, results_index_id, test, _bench_test(test, work_dir))
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
-    print(f"\n==> wrote {display} results to {destination} under run {settings.run_id}")
+    print(f"\n==> wrote {display} results to TaglyDB under run {settings.run_id}")
