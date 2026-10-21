@@ -13,6 +13,18 @@ package = false
 # One group per framework. Each Dockerfile stage syncs ONLY its own group
 # (`uv sync --no-default-groups --group <fw>`) so deps never interfere.
 [dependency-groups]
+wred = [
+    "wred>=0.11",
+    "msgspec",
+    "granian",
+    "uvicorn[standard]",
+    "pyjwt>=2.0",
+    "pyreqwest",
+    "uvloop",
+    "rloop",
+    "psqlpy",
+    "pydantic-settings",
+]
 jero = [
     "granian",
     "uvicorn[standard]",

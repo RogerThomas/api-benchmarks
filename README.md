@@ -8,11 +8,13 @@ run, exactly one framework container is ever alive alongside the dependent servi
 (Postgres, the upstream, the k6 runner), so no two frameworks ever share a core or
 contend for host resources.
 
-> **Disclosure**: I'm also the author of [jero](https://pypi.org/project/jero/), one of
-> the frameworks benchmarked here. Every measure in this repo — equal resource budgets,
+> **Disclosure**: The upstream suite was written by the author of
+> [jero](https://pypi.org/project/jero/). This fork adds
+> [Wred](https://pypi.org/project/wred/) and is maintained by Wred's author.
+> Every measure in this repo — equal resource budgets,
 > idiomatic code per framework, isolated single-framework runs, documented intended
-> differences — applies identically to jero and everyone else; nothing here is tuned in
-> its favor. Judge the methodology, not my word for it, and open an issue/PR if you spot
+> differences — applies identically to jero, Wred, and everyone else; nothing here is tuned in
+> their favor. Judge the methodology, not my word for it, and open an issue/PR if you spot
 > a framework being shortchanged.
 
 ## Run
@@ -20,6 +22,7 @@ contend for host resources.
 ```bash
 task bench                                     # every framework, one at a time, best-of-3
 task bench -- --frameworks "jero fastapi"      # just these two, still one at a time
+task bench -- --frameworks wred                # all four scenarios for Wred
 task bench -- --duration 30s --vus 200         # override k6 knobs (see: uv run yeet ./bench.py --help)
 task export-results -- 20260813T120000         # re-print a past run's tables
 ```
@@ -72,7 +75,7 @@ trimmed row looks like:
 
 | Framework | Language | Server (1 worker) | Outbound HTTP client | DB driver |
 | --- | --- | --- | --- | --- |
-| jero, FastAPI, Litestar, Blacksheep, Django Ninja | Python 3.13 | granian ASGI (`--loop uvloop`) | pyreqwest | psqlpy |
+| jero, Wred, FastAPI, Litestar, Blacksheep, Django Ninja | Python 3.13 | granian ASGI (`--loop uvloop`) | pyreqwest | psqlpy |
 | Flask | Python 3.13 | granian WSGI | pyreqwest (sync) | psycopg |
 | Robyn, Django Bolt | Python 3.13 | built-in Rust server (Bolt: `manage.py runbolt`) | pyreqwest | psqlpy |
 | Gin | Go | net/http (`GOMAXPROCS=1`) | net/http | pgx |
@@ -167,6 +170,7 @@ The goal is *idiomatic per framework*, held to equal conditions and made scrutab
   | | Validates body (test 2) | Parses upstream (test 3) | JSON serializer |
   | --- | --- | --- | --- |
   | jero | msgspec Struct | typed (msgspec) | msgspec |
+  | Wred | msgspec Struct | passthrough dict | orjson |
   | FastAPI | pydantic | typed (pydantic) + response-model re-validate | pydantic |
   | Litestar | msgspec Struct | typed (msgspec) | msgspec |
   | Blacksheep | dataclass bind | passthrough dict | orjson |
@@ -181,13 +185,20 @@ The goal is *idiomatic per framework*, held to equal conditions and made scrutab
   **Known, intended differences** (each framework's real idiomatic behaviour — kept, not
   normalised away): the JSON **serializer** column (stdlib json is slower than
   msgspec/orjson/native — relevant for Flask); **FastAPI** additionally re-validates the
-  *response* against its `response_model`; Blacksheep/Elysia/Django Ninja/Django Bolt
+  *response* against its `response_model`; Wred/Blacksheep/Elysia/Django Ninja/Django Bolt
   return the upstream payload straight through as bytes/dict rather than a typed model;
   and the two Django frameworks return **snake_case** field names (pydantic's/msgspec's
   default) where the other Python frameworks return camelCase; **Spring Boot**'s Jackson
   binding coerces a numeric field given as a JSON string (e.g. `"year": "2020"`) rather
   than rejecting it like pydantic/msgspec do. These are visible here so a number is never
   mistaken for pure framework speed.
+
+Wred's app uses `@app.route` handlers, tuple responses for headers/status codes,
+and msgspec body validation as shown in Wred's example app. A small ASGI lifespan
+wrapper opens and closes the shared pyreqwest client and psqlpy pool because Wred
+itself handles HTTP scopes only. JSON responses use Wred's native orjson serializer.
+Wred reuses the fixed `/info` dictionary and the movie decoder across requests;
+it still serializes each response and generates a fresh response UUID per request.
 
 ### Resource use (CPU / memory)
 
@@ -232,6 +243,10 @@ Builds and tears down its own stack (`compose.http-clients.yml`) — unrelated t
    `uv sync --no-default-groups --group <fw>`).
 4. Add `compose.<fw>.yml` (copy an existing one — e.g. `compose.jero.yml` — and swap the
    build target, service name, and any framework-specific env).
-5. Bench it with `task bench -- --frameworks "... <fw>"`.
+5. Register the name in `bench.py`'s `Framework` literal and, for ASGI apps,
+   `ASGI_FRAMEWORKS`; add its methodology to `export_results.py`'s `FRAMEWORK_FACTS`.
+6. Run `uv lock --project services/python` to refresh the local lockfile used by
+   the Docker build (lockfiles are gitignored in this repo).
+7. Bench it with `task bench -- --frameworks "... <fw>"`.
 
 Non-Python frameworks (Go/Gin, Bun/Elysia, Java/Spring Boot) have their own `services/<fw>/` dir + Dockerfile.

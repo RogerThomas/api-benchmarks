@@ -13,7 +13,7 @@ COPY pyproject.toml uv.lock ./
 COPY settings.py ./settings.py
 COPY serve.sh ./serve.sh
 
-# ASGI frameworks (jero/fastapi/litestar/blacksheep) launch via serve.sh, which
+# ASGI frameworks (jero/wred/fastapi/litestar/blacksheep) launch via serve.sh, which
 # selects granian or uvicorn from $PYTHON_SERVER. Flask is WSGI (granian, pinned
 # to one blocking thread for 1-core parity); Robyn ships its own server.
 
@@ -23,6 +23,13 @@ RUN uv sync --locked --no-default-groups --group jero
 COPY apps/jero_app.py ./jero_app.py
 EXPOSE 8000
 CMD ["sh", "serve.sh", "jero_app:app", "0.0.0.0", "8000"]
+
+# --- wred --------------------------------------------------------------------
+FROM base AS wred
+RUN uv sync --locked --no-default-groups --group wred
+COPY apps/wred_app.py ./wred_app.py
+EXPOSE 8000
+CMD ["bash", "serve.sh", "wred_app:app", "0.0.0.0", "8000"]
 
 # --- fastapi -----------------------------------------------------------------
 FROM base AS fastapi

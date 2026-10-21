@@ -52,6 +52,7 @@ type PythonServer = Literal["granian", "uvicorn"]
 type EventLoop = Literal["uvloop", "asyncio"]
 type Framework = Literal[
     "jero",
+    "wred",
     "fastapi",
     "litestar",
     "flask",
@@ -66,7 +67,7 @@ type Framework = Literal[
 
 # Frameworks that actually route through serve.sh and respect PYTHON_SERVER --
 # Flask is granian-only (WSGI), Robyn/Django Bolt ship their own server.
-ASGI_FRAMEWORKS = {"jero", "fastapi", "litestar", "blacksheep", "django-ninja"}
+ASGI_FRAMEWORKS = {"jero", "wred", "fastapi", "litestar", "blacksheep", "django-ninja"}
 
 
 def main(

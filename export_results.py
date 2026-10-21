@@ -236,6 +236,15 @@ TEST_HEADLINES: dict[str, tuple[str, str]] = {
 # per test") -- used to render a per-report table filtered to just the
 # frameworks that were actually part of this run.
 FRAMEWORK_FACTS: dict[str, dict[str, str]] = {
+    "wred": {
+        "language": "Python 3.13",
+        "server": "granian ASGI",
+        "http_client": "pyreqwest",
+        "db_driver": "psqlpy",
+        "validates_body": "msgspec Struct",
+        "parses_upstream": "passthrough dict",
+        "serializer": "orjson",
+    },
     "jero": {
         "language": "Python 3.13",
         "server": "granian ASGI",
@@ -555,12 +564,16 @@ token with PyJWT rather than using each framework's own auth integration.
 **Known, intended differences** (each framework's real idiomatic behaviour, kept
 rather than normalised away): the JSON serializer column (stdlib `json` is
 slower than msgspec/orjson/native); FastAPI additionally re-validates the
-*response* against its `response_model`; Blacksheep/Elysia/Django Ninja/Django
+*response* against its `response_model`; Wred/Blacksheep/Elysia/Django Ninja/Django
 Bolt return the upstream payload straight through as bytes/dict; the two Django
 frameworks return snake_case field names where the rest of the Python fleet
 returns camelCase; Spring Boot's Jackson binding coerces a numeric field given
 as a JSON string rather than rejecting it like pydantic/msgspec do. These are
-visible here so a number is never mistaken for pure framework speed."""
+visible here so a number is never mistaken for pure framework speed.
+
+Wred reuses the fixed `/info` dictionary and its msgspec movie decoder across
+requests. It still serializes each response and generates a fresh response UUID
+per request."""
 
 
 def _render_report(
@@ -613,12 +626,13 @@ def _render_report(
         "## Disclosure",
         "",
         (
-            "The author of this benchmark suite is also the author of "
-            "[jero](https://pypi.org/project/jero/), one of the frameworks benchmarked "
-            "here. Every measure above -- equal resource budgets, idiomatic code per "
+            "The upstream suite was written by the author of "
+            "[jero](https://pypi.org/project/jero/). This fork adds "
+            "[Wred](https://pypi.org/project/wred/) and is maintained by Wred's author. "
+            "Every measure above -- equal resource budgets, idiomatic code per "
             "framework, isolated single-framework runs, documented intended "
-            "differences -- applies identically to jero and everyone else; nothing "
-            "here is tuned in its favor."
+            "differences -- applies identically to jero, Wred, and everyone else; nothing "
+            "here is tuned in their favor."
         ),
         "",
         "---",
