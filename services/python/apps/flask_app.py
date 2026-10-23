@@ -1,8 +1,8 @@
 """Flask benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me).
 
-Flask is WSGI; served under granian's WSGI interface. Uses Flask's recommended
+Flask is WSGI; served under peregrine (protocol auto-detected). Uses Flask's recommended
 application-factory pattern: settings live in ``app.config``, and the shared
-pyreqwest sync client + psycopg pool are attached to ``app.extensions``, reached
+lothc sync client + psycopg pool are attached to ``app.extensions``, reached
 in handlers via ``current_app`` (no module-level globals).
 """
 
@@ -11,11 +11,11 @@ import uuid
 from collections.abc import Callable
 from typing import Literal
 
-import jwt
+import ryjwt
 from flask import Blueprint, Flask, current_app, g, jsonify, request
+from lothc import SyncHTTPClient
 from psycopg_pool import ConnectionPool
-from pydantic import BaseModel
-from pyreqwest.client import SyncClient, SyncClientBuilder
+from pydantic import BaseModel, ValidationError
 from settings import Settings
 
 _GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = %s"
@@ -53,6 +53,17 @@ class Product(BaseModel):
     vendor: Vendor
 
 
+class Claims(BaseModel):
+    sub: str
+    name: str
+
+
+@bp.errorhandler(ValidationError)
+def validation_failed(exc: ValidationError):
+    """An invalid request body is the client's fault: 422, not a 500."""
+    return jsonify({"error": "invalid body", "detail": exc.errors(include_url=False)}), 422
+
+
 def auth_required(view: Callable) -> Callable:
     @functools.wraps(view)
     def wrapper(*args, **kwargs):
@@ -60,10 +71,10 @@ def auth_required(view: Callable) -> Callable:
         authorization = request.headers.get("Authorization", "")
         token = authorization.removeprefix("Bearer ").strip()
         try:
-            payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-        except jwt.PyJWTError:
+            claims = settings.jwt_key.decode(token, into=Claims)
+        except ryjwt.InvalidTokenError:  # includes a token missing sub/name
             return jsonify({"error": "invalid token"}), 401
-        g.user = {"id": payload["sub"], "name": payload["name"]}
+        g.user = {"id": claims.sub, "name": claims.name}
         return view(*args, **kwargs)
 
     return wrapper
@@ -103,12 +114,11 @@ def create_movie():
 
 @bp.get("/catalog")
 def catalog():
-    client: SyncClient = current_app.extensions["http_client"]
-    # Auth rides on the client's default headers (set once at build time).
-    resp = client.get("/data").build().send()
-    # bytes(): pydantic wants str/bytes/bytearray — it rejects pyreqwest's buffer.
-    product = Product.model_validate_json(bytes(resp.bytes()))
-    return jsonify(product.model_dump())
+    client: SyncHTTPClient = current_app.extensions["http_client"]
+    # Auth rides on the client's bearer_token (set once at build time); lothc
+    # validates the body straight into the pydantic model.
+    resp = client.get("data", into=Product)
+    return jsonify(resp.data.model_dump())
 
 
 # --- Test 4: GET /users/me (Postgres) ----------------------------------------
@@ -139,14 +149,12 @@ def create_app() -> Flask:
     app = Flask(__name__)
     settings = Settings()
     app.config["SETTINGS"] = settings
-    # Flask is sync; one pyreqwest SyncClient (HTTP) and one psycopg pool (DB),
-    # attached to the app rather than held as module-level globals.
-    app.extensions["http_client"] = (
-        SyncClientBuilder()
-        .base_url(settings.upstream_url)
-        .default_headers({"authorization": f"Bearer {settings.upstream_api_key}"})
-        .build()
-    )
+    # Flask is sync; one lothc SyncHTTPClient (HTTP) and one psycopg pool (DB),
+    # attached to the app rather than held as module-level globals. The client
+    # is entered once here and lives as long as the process.
+    app.extensions["http_client"] = SyncHTTPClient(
+        **settings.upstream_client_options
+    ).__enter__()
     app.extensions["db_pool"] = ConnectionPool(
         conninfo=(
             f"host={settings.db_host} port={settings.db_port} "

@@ -2,7 +2,7 @@
 name = "jero-benchmarks-python"
 version = "0.0.0"
 description = "Python API-framework benchmark targets. One uv dependency group per framework."
-requires-python = ">=3.13"
+requires-python = ">=3.14.3"
 dependencies = []
 
 [tool.uv]
@@ -10,96 +10,68 @@ dependencies = []
 # isolated venvs (one per Dockerfile stage).
 package = false
 
+[tool.uv.sources]
+# fastpg isn't on PyPI: a linux/arm64 cp314 wheel built from its repo with maturin.
+fastpg = { path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" }
+# robyn publishes no cp314 wheels (and no sdist), so build its release tag from source.
+robyn = { url = "https://github.com/sparckles/Robyn/archive/refs/tags/v0.88.0.tar.gz" }
+
 # One group per framework. Each Dockerfile stage syncs ONLY its own group
 # (`uv sync --no-default-groups --group <fw>`) so deps never interfere.
 [dependency-groups]
 jero = [
-    "granian",
-    "uvicorn[standard]",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "uvloop",
-    "rloop",
-    "psqlpy",
+    "peregrine-server[uvloop]",
+    "ryjwt[msgspec]",
+    "lothc[msgspec]",
+    "fastpg",
     "pydantic-settings",
     "jero>=0.0.27",
 ]
 fastapi = [
     "fastapi",
-    "granian",
-    "uvicorn[standard]",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "uvloop",
-    "rloop",
-    "psqlpy",
+    "peregrine-server[uvloop]",
+    "ryjwt",
+    "lothc[pydantic]",
+    "fastpg[pydantic]",
     "pydantic-settings",
 ]
 litestar = [
     "litestar",
-    "granian",
-    "uvicorn[standard]",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "uvloop",
-    "rloop",
-    "psqlpy",
+    "peregrine-server[uvloop]",
+    "ryjwt",
+    "lothc[msgspec]",
+    "fastpg",
     "pydantic-settings",
 ]
 flask = [
     "flask",
-    "granian",
-    "pyjwt>=2.0",
-    "pyreqwest",
+    "peregrine-server",
+    "ryjwt",
+    "lothc[pydantic]",
     "psycopg[binary,pool]",
     "pydantic-settings",
 ]
 blacksheep = [
     "blacksheep",
-    "granian",
-    "uvicorn[standard]",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "uvloop",
-    "rloop",
-    "psqlpy",
+    "peregrine-server[uvloop]",
+    "ryjwt",
+    "lothc[pydantic]",
+    "fastpg[pydantic]",
     "pydantic-settings",
 ]
 robyn = [
     "robyn",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "psqlpy",
-    "pydantic-settings",
-]
-pyronova = [
-    "pyronova",
-    "pydantic",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "psqlpy",
-    "pydantic-settings",
-]
-django-ninja = [
-    "django>=5.2",
-    "django-ninja",
-    "granian",
-    "uvicorn[standard]",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "uvloop",
-    "rloop",
-    "psycopg[binary,pool]",
-    "psqlpy",
+    "ryjwt",
+    "lothc[pydantic]",
+    "fastpg[pydantic]",
     "pydantic-settings",
 ]
 django-bolt = [
     "django>=5.2",
     "django-bolt",
     "msgspec",
-    "pyjwt>=2.0",
-    "pyreqwest",
-    "psycopg[binary,pool]",
-    "psqlpy",
+    "ryjwt",
+    "lothc",
+    "fastpg",
     "pydantic-settings",
 ]

@@ -9,14 +9,13 @@ services:
         limits:
           memory: 2G
     cpuset: "0"
-    # Flask is sync (granian WSGI). blocking-threads is fixed at 1 in the
-    # Dockerfile: a thread sweep (1/2/4/8) showed 1 wins on every test
-    # including the I/O ones — on a single capped core the GIL + scheduling
-    # overhead swamp any I/O-overlap gain.
+    # Flask is sync (peregrine WSGI). Views run inline on the worker, no
+    # --wsgi-threads pool: a thread sweep (1/2/4/8, under granian) showed 1
+    # wins on every test including the I/O ones — on a single capped core the
+    # GIL + scheduling overhead swamp any I/O-overlap gain.
     environment:
       JWT_SECRET: "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
       WORKERS: ${WORKERS:-1}
-      PYTHON_SERVER: ${PYTHON_SERVER:-granian}
       UPSTREAM_URL: http://upstream:8000
       UPSTREAM_API_KEY: "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
       DB_HOST: postgres
@@ -29,10 +28,12 @@ services:
       postgres: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/info')"]
-      interval: 2s
+      # Probe every 1s until healthy, then only hourly: a probe mid-bench would
+      # run on the measured core (and costs more for some images than others).
+      start_period: 120s
+      start_interval: 1s
+      interval: 1h
       timeout: 3s
-      retries: 40
-      start_period: 2s
     networks: [bench]
 
   runner:

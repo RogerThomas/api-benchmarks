@@ -1,17 +1,17 @@
-"""Litestar benchmark app — tests 1 (GET info) and 2 (authenticated POST movie)."""
+"""Litestar benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me)."""
 
 import uuid
 from contextlib import asynccontextmanager
 from typing import Literal
 
-import jwt
+import fastpg
 import msgspec
-import psqlpy
+import ryjwt
 from litestar import Litestar, Request, Response, get, post
 from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.exceptions import NotAuthorizedException, NotFoundException
-from pyreqwest.client import Client, ClientBuilder
+from lothc import HTTPClient
 from settings import Settings
 
 _GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
@@ -70,6 +70,11 @@ class User(msgspec.Struct):
     name: str
 
 
+class Claims(msgspec.Struct):
+    sub: str
+    name: str
+
+
 class Movie(msgspec.Struct):
     id: str
     title: str
@@ -84,10 +89,10 @@ async def provide_user(request: Request, state: State) -> User:
     authorization = request.headers.get("Authorization", "")
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        payload = jwt.decode(token, state.settings.jwt_secret, algorithms=["HS256"])
-    except jwt.PyJWTError as exc:
+        claims = state.settings.jwt_key.decode(token, into=Claims)
+    except ryjwt.InvalidTokenError as exc:  # includes a token missing sub/name
         raise NotAuthorizedException("invalid token") from exc
-    return User(id=payload["sub"], name=payload["name"])
+    return User(id=claims.sub, name=claims.name)
 
 
 @post("/movies", dependencies={"user": Provide(provide_user)})
@@ -127,11 +132,11 @@ class Product(msgspec.Struct):
 
 @get("/catalog")
 async def catalog(state: State) -> Product:
-    client: Client = state.client
-    # Auth rides on the client's default headers (set once at build time);
-    # msgspec decodes straight from the response buffer (no copy).
-    resp = await client.get("/data").build().send()
-    return msgspec.json.decode(await resp.bytes(), type=Product)
+    client: HTTPClient = state.client
+    # Auth rides on the client's bearer_token (set once at build time); lothc
+    # decodes the body straight into the msgspec Struct.
+    resp = await client.get("data", into=Product)
+    return resp.data
 
 
 # --- Test 4: GET /users/me (Postgres) ----------------------------------------
@@ -148,37 +153,23 @@ class Profile(msgspec.Struct):
 
 @get("/users/me", dependencies={"user": Provide(provide_user)})
 async def users_me(state: State, user: User) -> Profile:
-    pool: psqlpy.ConnectionPool = state.pool
-    async with pool.acquire() as connection:
-        result = await connection.execute(_GET_USER_SQL, [user.id])
-    rows = result.result(as_tuple=True)
-    if not rows:
-        raise NotFoundException("user not found")
-    return Profile(*rows[0])
+    pool: fastpg.Pool = state.pool
+    try:
+        return await pool.select_one(_GET_USER_SQL, user.id, into=Profile)
+    except fastpg.NoRowsError:
+        raise NotFoundException("user not found") from None
 
 
 @asynccontextmanager
 async def lifespan(app: Litestar):
     settings = Settings()
     app.state.settings = settings
-    pool = psqlpy.ConnectionPool(
-        username=settings.db_user,
-        password=settings.db_password,
-        host=settings.db_host,
-        port=settings.db_port,
-        db_name=settings.db_name,
-        max_db_pool_size=settings.db_pool_size,
-    )
-    async with (
-        ClientBuilder()
-        .base_url(settings.upstream_url)
-        .default_headers({"authorization": f"Bearer {settings.upstream_api_key}"})
-        .build()
-    ) as client:
+    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
+    async with HTTPClient(**settings.upstream_client_options) as client:
         app.state.client = client
         app.state.pool = pool
         yield
-    pool.close()
+    await pool.close()
 
 
 app = Litestar(route_handlers=[get_info, create_movie, catalog, users_me], lifespan=[lifespan])

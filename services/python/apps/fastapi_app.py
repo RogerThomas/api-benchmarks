@@ -6,11 +6,11 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated, Literal
 
-import jwt
-import psqlpy
+import fastpg
+import ryjwt
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from lothc import HTTPClient
 from pydantic import BaseModel
-from pyreqwest.client import Client, ClientBuilder
 from settings import Settings
 
 _GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
@@ -25,27 +25,13 @@ def _get_settings() -> Settings:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = _get_settings()
-    pool = psqlpy.ConnectionPool(
-        username=settings.db_user,
-        password=settings.db_password,
-        host=settings.db_host,
-        port=settings.db_port,
-        db_name=settings.db_name,
-        max_db_pool_size=settings.db_pool_size,
-    )
-    async with (
-        ClientBuilder()
-        .base_url(settings.upstream_url)
-        .default_headers({"authorization": f"Bearer {settings.upstream_api_key}"})
-        .build()
-    ) as client:
-        app.state.client = client
-        app.state.pool = pool
-        app.state.auth = AuthService(settings.jwt_secret)
+    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
+    async with HTTPClient(**settings.upstream_client_options) as client:
+        app.state.auth = AuthService(settings.jwt_key)
         app.state.user_service = UserService(pool)
         app.state.catalog_service = CatalogService(client)
         yield
-    pool.close()
+    await pool.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -109,30 +95,35 @@ class Movie(MovieIn):
     user: User
 
 
+class Claims(BaseModel):
+    sub: str
+    name: str
+
+
 @dataclass(slots=True)
 class AuthService:
     """Verifies the bearer JWT. Built once in the lifespan, shared via app.state."""
 
-    jwt_secret: str
+    jwt_key: ryjwt.SecretKey
 
     def authenticate(self, authorization: str) -> User:
         token = authorization.removeprefix("Bearer ").strip()
         try:
-            payload = jwt.decode(token, self.jwt_secret, algorithms=["HS256"])
-        except jwt.PyJWTError:
+            claims = self.jwt_key.decode(token, into=Claims)
+        except ryjwt.InvalidTokenError:  # includes a token missing sub/name
             raise HTTPException(status_code=401, detail="invalid token")
-        return User(id=payload["sub"], name=payload["name"])
+        return User(id=claims.sub, name=claims.name)
 
 
 # Async dependency: runs on the event loop (no threadpool hop, unlike a sync
-# dependency). Pulls the shared AuthService off app.state and verifies the header.
-async def _get_current_user(request: Request, authorization: str = Header()) -> User:
+# dependency). Pulls the shared AuthService off app.state and verifies the header
+# (a missing header is "" here, so it's a 401 like any bad token, not a 422).
+async def _get_current_user(request: Request, authorization: str = Header(default="")) -> User:
     auth: AuthService = request.app.state.auth
     return auth.authenticate(authorization)
 
 
 type UserDep = Annotated[User, Depends(_get_current_user)]
-
 
 
 @app.post("/movies", status_code=201)
@@ -166,13 +157,13 @@ class Product(BaseModel):
 class CatalogService:
     """Proxies the API-key-protected upstream. Built once in the lifespan and shared."""
 
-    _client: Client
+    _client: HTTPClient
 
     async def fetch(self) -> Product:
-        # Auth rides on the client's default headers (set once at build time).
-        resp = await self._client.get("/data").build().send()
-        # bytes(): the body is consume-once, and pydantic wants bytes, not a buffer.
-        return Product.model_validate_json(bytes(await resp.bytes()))
+        # Auth rides on the client's bearer_token (set once at build time); lothc
+        # validates the body straight into the pydantic model.
+        resp = await self._client.get("data", into=Product)
+        return resp.data
 
 
 async def _get_catalog_service(request: Request) -> CatalogService:
@@ -203,28 +194,17 @@ class Profile(BaseModel):
 class UserService:
     """Reads user profiles from Postgres. Built once in the lifespan and shared."""
 
-    _pool: psqlpy.ConnectionPool
+    _pool: fastpg.Pool
 
     async def get_profile(self, user_id: str) -> Profile:
-        async with self._pool.acquire() as connection:
-            result = await connection.execute(_GET_USER_SQL, [user_id])
-        rows = result.result(as_tuple=True)
-        if not rows:
-            raise HTTPException(status_code=404, detail="user not found")
-        row = rows[0]
-        return Profile(
-            id=row[0],
-            name=row[1],
-            email=row[2],
-            address=row[3],
-            city=row[4],
-            country=row[5],
-        )
+        try:
+            return await self._pool.select_one(_GET_USER_SQL, user_id, into=Profile)
+        except fastpg.NoRowsError:
+            raise HTTPException(status_code=404, detail="user not found") from None
 
 
 async def _get_user_service(request: Request) -> UserService:
     return request.app.state.user_service
-
 
 
 type UserServiceDep = Annotated[UserService, Depends(_get_user_service)]

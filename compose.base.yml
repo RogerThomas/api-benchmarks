@@ -1,5 +1,5 @@
 # Dependent services shared by every framework: Postgres (test 4), the fast
-# Rust (axum) static-JSON `upstream` (test 3), and the k6 `runner`. Combine
+# Rust (axum) static-JSON `upstream` (test 3), and the load-generating `runner`. Combine
 # with exactly one compose.<framework>.yml to bench that framework alone:
 #
 #   RUN_ID=20260813T120000 docker compose \
@@ -22,8 +22,8 @@ services:
     image: postgres:18-alpine
     deploy: *mem
     cpuset: "1,2"
-    # Only one framework's pool (db_pool_size=64) is ever live at a time, so
-    # the default max_connections=100 has plenty of headroom.
+    # Only one framework's pool (64 connections) is ever live at a time;
+    # max_connections=200 leaves plenty of headroom above that.
     command: ["postgres", "-c", "max_connections=200"]
     environment:
       POSTGRES_USER: bench
@@ -49,7 +49,7 @@ services:
       UPSTREAM_API_KEY: "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
     healthcheck:
       # 127.0.0.1, not localhost: busybox wget prefers IPv6 ::1 but axum binds IPv4.
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "/bin/busybox", "wget", "-qO-", "http://127.0.0.1:8000/health"]
       interval: 2s
       timeout: 3s
       retries: 40
@@ -77,13 +77,7 @@ services:
       VUS: ${VUS:-100}
       RUNS: ${RUNS:-3}
       WORKERS: ${WORKERS:-1}
-      PYTHON_SERVER: ${PYTHON_SERVER:-granian}
-      LOOP: ${LOOP:-uvloop}
-      # Set by bench.py's --python-servers sweep to tag results distinctly
-      # (e.g. "jero-granian") when the same framework runs under more than
-      # one server in a single run; blank otherwise (Result.framework then
-      # falls back to the plain framework name, see loadtest/run.py).
-      RESULT_LABEL: ${RESULT_LABEL:-}
+      LOADGEN: ${LOADGEN:-wrk}
       TESTS: ${TESTS:-test1 test2 test3 test4}
       BENCH_HOSTNAME: ${BENCH_HOSTNAME:-}
       # Informational only (not needed to run a bench) -- set by ec2_launch.py
@@ -91,12 +85,12 @@ services:
       EC2_AMI_ID: ${EC2_AMI_ID:-}
       EC2_INSTANCE_TYPE: ${EC2_INSTANCE_TYPE:-}
       AWS_REGION: ${AWS_REGION:-}
+      IMAGES: ${IMAGES:-}
       # Results backend: TaglyDB. bench.py reads this from .env and
       # forwards it here — see loadtest/run.py's Tagly.build() call
       # (base URL is inlined there, not env-configurable).
       TAGLYDB_API_KEY: ${TAGLYDB_API_KEY:-}
     volumes:
-      - ./results:/results
       # Read-only docker socket so the runner can `docker stats` the
       # framework's own container (cgroup CPU/mem) during each attempt.
       - /var/run/docker.sock:/var/run/docker.sock:ro

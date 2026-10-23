@@ -1,8 +1,8 @@
 # Outbound HTTP client shootout. Same base image / uv setup as the framework
-# stages so the interpreter is identical (Python 3.13.14). Runs once against the
+# stages so the interpreter is identical (Python 3.14.9). Runs once against the
 # upstream, prints the tables, then exits.
-FROM python:3.13.14-slim-trixie AS base
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+FROM python:3.14.9-slim-trixie AS base
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /bin/uv
 WORKDIR /app
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_COMPILE_BYTECODE=1 \

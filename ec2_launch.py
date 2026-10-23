@@ -5,19 +5,36 @@ runs `task bench`, uploads results to TaglyDB and its log to S3, then
 self-terminates. No SSH babysitting needed -- ./ec2_tail_logs.py watches it
 live, ./export_results.py reads the results back out once it's done.
 
-    uv run yeet ./ec2_launch.py
-    uv run yeet ./ec2_launch.py --duration 60s --vus 128 --frameworks "jero fastapi"
+Images are built here and pushed to ECR (one repo), so instances pull
+ready-made images instead of compiling. Every image is versioned on its own,
+CalVer-style: `<service>-YYYY.MM.DD.NN`, e.g. `jero-2026.10.23.01` (NN counts
+up within the UTC day). A build only pushes a new version of an image that
+actually changed -- edit jero and only jero gets a new tag. Tags are immutable,
+and every result records the exact image tags it ran on.
+
+    uv run yeet ./ec2_launch.py                       # everything, one instance
+    uv run yeet ./ec2_launch.py --parallel            # one instance per framework
+    uv run yeet ./ec2_launch.py --parallel --max-instances 4  # ...at most 4 at once
+    uv run yeet ./ec2_launch.py --frameworks jero     # rebuild jero if changed, bench it
+    uv run yeet ./ec2_launch.py --frameworks jero --tag 2026.10.23.01  # exact image, no build
+    uv run yeet ./ec2_launch.py:push --frameworks jero  # build + version changed images, no launch
     # backfill django-bolt into a run an earlier launch already started:
     uv run yeet ./ec2_launch.py --frameworks django-bolt --run-id 20260815T070512
 """
 
+import json
+import re
 import sys
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import get_args
 
-from plumbum import FG, local
+from plumbum import FG, ProcessExecutionError, local
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from bench import Framework
 
 
 class EC2Settings(BaseSettings):
@@ -37,6 +54,7 @@ class EC2Settings(BaseSettings):
     ec2_iam_instance_profile: str = "jero-benchmarks-ec2-profile"
     ec2_s3_bucket: str = "jero-benchmarks-751884348953"
     ec2_s3_bucket_region: str = "eu-west-2"
+    ec2_ecr_repo: str = "751884348953.dkr.ecr.eu-central-1.amazonaws.com/jero-benchmarks"
 
     taglydb_api_key: str | None = None
     upstream_api_key: str = "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
@@ -82,7 +100,134 @@ def _sync_code(settings: EC2Settings) -> None:
         tarball_path.unlink(missing_ok=True)
 
 
-def _render_user_data(settings: EC2Settings, *, bench_args: str) -> str:
+# Harness images every instance needs alongside its framework(s).
+_SHARED_IMAGES = ["postgres", "upstream", "runner"]
+_TAG_RE = re.compile(r"(?P<service>.+)-(?P<version>\d{4}\.\d{2}\.\d{2}\.\d{2})")
+
+
+def _local_image(service: str) -> str:
+    return "postgres:18-alpine" if service == "postgres" else f"jero-benchmarks-{service}"
+
+
+def _ecr_versions(settings: EC2Settings) -> dict[str, dict[str, str]]:
+    """service -> {version: manifest digest}, for every versioned tag in ECR."""
+    out = local["aws"][
+        "ecr",
+        "describe-images",
+        "--region",
+        settings.aws_region,
+        "--repository-name",
+        settings.ec2_ecr_repo.split("/", 1)[1],
+        "--query",
+        "imageDetails[].{tags: imageTags, digest: imageDigest}",
+        "--output",
+        "json",
+    ]()
+    versions: dict[str, dict[str, str]] = {}
+    for image in json.loads(out):
+        for tag in image["tags"] or []:
+            if m := _TAG_RE.fullmatch(tag):
+                versions.setdefault(m["service"], {})[m["version"]] = image["digest"]
+    return versions
+
+
+def _image_digest(settings: EC2Settings, tag: str) -> str:
+    """Digest of the arm64 image manifest behind `tag`. Not the tag's own digest:
+    BuildKit wraps each build in an index with a fresh provenance attestation,
+    so the index digest changes on every rebuild even when the image doesn't."""
+    out = local["aws"][
+        "ecr",
+        "batch-get-image",
+        "--region",
+        settings.aws_region,
+        "--repository-name",
+        settings.ec2_ecr_repo.split("/", 1)[1],
+        "--image-ids",
+        f"imageTag={tag}",
+        "--query",
+        "images[0].[imageId.imageDigest, imageManifest]",
+        "--output",
+        "json",
+    ]()
+    digest, manifest = json.loads(out)
+    for entry in json.loads(manifest).get("manifests", []):
+        if entry.get("platform", {}).get("architecture") == "arm64":
+            return entry["digest"]
+    return digest  # a plain single-platform manifest
+
+
+def _latest(versions: dict[str, dict[str, str]], service: str) -> str | None:
+    known = versions.get(service, {})
+    return max(known, key=lambda v: tuple(map(int, v.split(".")))) if known else None
+
+
+def _next_version(versions: dict[str, dict[str, str]], service: str) -> str:
+    today = datetime.now(UTC).strftime("%Y.%m.%d")
+    taken = [int(v.rsplit(".", 1)[1]) for v in versions.get(service, {}) if v.startswith(today)]
+    return f"{today}.{max(taken, default=0) + 1:02d}"
+
+
+def _push_changed(settings: EC2Settings, frameworks: list[str]) -> dict[str, str]:
+    """Build the images these frameworks need, then push a new version of each
+    one that differs from its latest version in ECR; return service -> version
+    for everything the run will use (new or reused)."""
+    repo_root = Path(__file__).resolve().parent
+    compose_args = ["compose", "-f", "compose.base.yml"]
+    for fw in frameworks:
+        compose_args += ["-f", f"compose.{fw}.yml"]
+    docker = local["docker"]
+    with local.cwd(repo_root), local.env(RUN_ID="build"):
+        _ = docker[(*compose_args, "build")] & FG
+    _ = docker["pull", "-q", "postgres:18-alpine"]()
+    password = local["aws"]["ecr", "get-login-password", "--region", settings.aws_region]()
+    registry = settings.ec2_ecr_repo.split("/")[0]
+    _ = (docker["login", "--username", "AWS", "--password-stdin", registry] << password)()
+
+    versions = _ecr_versions(settings)
+    chosen: dict[str, str] = {}
+    for service in [*_SHARED_IMAGES, *frameworks]:
+        local_digest = docker[
+            "image",
+            "inspect",
+            "--platform",
+            "linux/arm64",
+            "--format",
+            "{{.Descriptor.digest}}",
+            _local_image(service),
+        ]().strip()
+        latest = _latest(versions, service)
+        if latest and _image_digest(settings, f"{service}-{latest}") == local_digest:
+            chosen[service] = latest
+            print(f"  {service}-{latest} (unchanged)")
+            continue
+        version = _next_version(versions, service)
+        ref = f"{settings.ec2_ecr_repo}:{service}-{version}"
+        _ = docker["tag", _local_image(service), ref]()
+        print(f"  pushing {service}-{version}")
+        _ = docker["push", "-q", ref]()
+        chosen[service] = version
+    return chosen
+
+
+def _existing(settings: EC2Settings, frameworks: list[str], tag: str) -> dict[str, str]:
+    """No build: `tag` for every framework, the latest version of each shared image."""
+    versions = _ecr_versions(settings)
+    chosen = {}
+    for service in _SHARED_IMAGES:
+        if (latest := _latest(versions, service)) is None:
+            print(f"no {service} image in ECR yet -- run once without --tag", file=sys.stderr)
+            raise SystemExit(1)
+        chosen[service] = latest
+    for fw in frameworks:
+        if tag not in versions.get(fw, {}):
+            known = ", ".join(sorted(versions.get(fw, {}))) or "none"
+            print(f"no {fw}-{tag} in ECR (known {fw} versions: {known})", file=sys.stderr)
+            raise SystemExit(1)
+        chosen[fw] = tag
+    return chosen
+
+
+def _render_user_data(settings: EC2Settings, *, bench_args: str, images: dict[str, str]) -> str:
     template_path = Path(__file__).resolve().parent / "ec2" / "user-data.sh.template"
     template = template_path.read_text()
     return (
@@ -91,48 +236,28 @@ def _render_user_data(settings: EC2Settings, *, bench_args: str) -> str:
         .replace("__TAGLYDB_API_KEY__", settings.taglydb_api_key or "")
         .replace("__UPSTREAM_API_KEY__", settings.upstream_api_key)
         .replace("__BENCH_ARGS__", bench_args)
+        .replace("__ECR_REPO__", settings.ec2_ecr_repo)
+        .replace("__AWS_REGION__", settings.aws_region)
+        .replace("__IMAGES__", " ".join(f"{svc}={ver}" for svc, ver in images.items()))
     )
 
 
-def main(
+def _launch(
+    settings: EC2Settings,
     *,
-    duration: str = "60s",
-    vus: int = 128,
-    runs: int = 3,
-    python_server: str = "granian",
-    python_servers: str = "",
-    loop: str = "uvloop",
-    frameworks: str = "",
-    tests: str = "",
-    run_id: str = "",
-    spot: bool = False,
-) -> None:
-    settings = EC2Settings()
-    if not settings.taglydb_api_key:
-        print(
-            "TAGLYDB_API_KEY must be set in .env -- an EC2 run needs a shared results backend.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
-    run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    bench_args = (
-        f"--duration {duration} --vus {vus} --runs {runs} --run-id {run_id} "
-        f"--python-server {python_server} --loop {loop} "
-        f"--ec2-ami-id {settings.ec2_ami_id} --ec2-instance-type {settings.ec2_instance_type} "
-        f"--aws-region {settings.aws_region}"
+    run_id: str,
+    bench_args: str,
+    frameworks: list[str],
+    versions: dict[str, str],
+) -> str:
+    """Start one spot instance that benches `frameworks`; return its instance id."""
+    images = {svc: versions[svc] for svc in [*_SHARED_IMAGES, *frameworks]}
+    tags = " ".join(f"{svc}-{ver}" for svc, ver in images.items())
+    user_data = _render_user_data(
+        settings,
+        bench_args=f'{bench_args} --frameworks "{" ".join(frameworks)}" --images "{tags}"',
+        images=images,
     )
-    if python_servers:
-        bench_args += f' --python-servers "{python_servers}"'
-    if frameworks:
-        bench_args += f' --frameworks "{frameworks}"'
-    if tests:
-        bench_args += f' --tests "{tests}"'
-
-    print(f"==> syncing code to s3://{settings.ec2_s3_bucket}/code/jero-benchmarks.tar.gz")
-    _sync_code(settings)
-
-    user_data = _render_user_data(settings, bench_args=bench_args)
     with tempfile.NamedTemporaryFile(
         "w", prefix="jero-user-data-", suffix=".sh", delete=False
     ) as user_data_file:
@@ -161,31 +286,153 @@ def main(
         "--user-data",
         f"file://{user_data_path}",
         "--tag-specifications",
-        f"ResourceType=instance,Tags=[{{Key=Name,Value={run_id}}}]",
+        f"ResourceType=instance,Tags=[{{Key=Name,Value={run_id}-{'-'.join(frameworks)[:200]}}}]",
         "--query",
         "Instances[0].InstanceId",
         "--output",
         "text",
+        # Always spot. One-time (not persistent) -- matches the fire-and-forget
+        # lifecycle: no auto-relaunch if AWS reclaims the capacity mid-run.
+        # Capped at the on-demand price implicitly (no MaxPrice override).
+        "--instance-market-options",
+        (
+            '{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time",'
+            '"InstanceInterruptionBehavior":"terminate"}}'
+        ),
     ]
-    if spot:
-        # One-time (not persistent) -- matches the fire-and-forget lifecycle:
-        # no auto-relaunch if AWS reclaims the capacity mid-run. Left
-        # capped at the on-demand price implicitly (no MaxPrice override).
-        run_instances_args += [
-            "--instance-market-options",
-            (
-                '{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time",'
-                '"InstanceInterruptionBehavior":"terminate"}}'
-            ),
-        ]
-
     try:
-        instance_id = local["aws"][run_instances_args]().strip()
+        return local["aws"][run_instances_args]().strip()
     finally:
         user_data_path.unlink(missing_ok=True)
 
-    market = "spot" if spot else "on-demand"
-    print(
-        f"launched {instance_id} ({market}, run {run_id}) in {settings.aws_region} -- {bench_args}"
+
+def push(*, frameworks: str = "") -> None:
+    """Build and push a new version of every changed image; launch nothing."""
+    fw_list = frameworks.split() or list(get_args(Framework.__value__))
+    versions = _push_changed(EC2Settings(), fw_list)
+    print(" ".join(f"{svc}-{ver}" for svc, ver in versions.items()))
+
+
+def _running(settings: EC2Settings, run_id: str) -> int:
+    """How many of this run's instances still hold spot capacity. Counted by the
+    run-id name tag, so a second launcher for the same run sees the first one's
+    instances too; "shutting-down" still counts against the spot quota."""
+    out = local["aws"][
+        "ec2",
+        "describe-instances",
+        "--region",
+        settings.aws_region,
+        "--filters",
+        f"Name=tag:Name,Values={run_id}-*",
+        "Name=instance-state-name,Values=pending,running,shutting-down,stopping",
+        "--query",
+        "length(Reservations[].Instances[])",
+        "--output",
+        "text",
+    ]()
+    return int(out.strip())
+
+
+def _launch_when_free(
+    settings: EC2Settings,
+    *,
+    run_id: str,
+    bench_args: str,
+    frameworks: list[str],
+    versions: dict[str, str],
+    max_instances: int,
+) -> str | None:
+    """Launch once fewer than `max_instances` of this run hold capacity (no cap
+    if 0), retrying while AWS reports the spot quota full. Returns the instance
+    id, or None if the launch failed for any other reason."""
+    while True:
+        while max_instances and _running(settings, run_id) >= max_instances:
+            time.sleep(30)
+        try:
+            return _launch(
+                settings,
+                run_id=run_id,
+                bench_args=bench_args,
+                frameworks=frameworks,
+                versions=versions,
+            )
+        except ProcessExecutionError as exc:
+            if max_instances and "MaxSpotInstanceCountExceeded" in exc.stderr:
+                time.sleep(30)  # capacity frees up as an instance finishes terminating
+                continue
+            print(
+                f"  NOT launched {' '.join(frameworks)}: {exc.stderr.strip()[-200:]}",
+                file=sys.stderr,
+            )
+            return None
+
+
+def main(
+    *,
+    duration: str = "60s",
+    vus: int = 128,
+    runs: int = 3,
+    frameworks: str = "",
+    tests: str = "",
+    run_id: str = "",
+    loadgen: str = "wrk",
+    parallel: bool = False,
+    max_instances: int = 0,
+    tag: str = "",
+) -> None:
+    """Launch the bench on EC2 spot -- one instance for everything, or with
+    --parallel one instance per framework (same run id, so one report).
+    --max-instances N keeps at most N running, launching the next as one
+    finishes (each instance self-terminates when its bench is done). With
+    --tag, run that exact image version of each framework instead of building."""
+    settings = EC2Settings()
+    if not settings.taglydb_api_key:
+        print(
+            "TAGLYDB_API_KEY must be set in .env -- an EC2 run needs a shared results backend.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    fw_list = frameworks.split() or list(get_args(Framework.__value__))
+    run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    bench_args = (
+        f"--duration {duration} --vus {vus} --runs {runs} --run-id {run_id} "
+        f"--loadgen {loadgen} "
+        f"--ec2-ami-id {settings.ec2_ami_id} --ec2-instance-type {settings.ec2_instance_type} "
+        f"--aws-region {settings.aws_region}"
     )
-    print(f"uv run yeet ./ec2_tail_logs.py {instance_id}")
+    if tests:
+        bench_args += f' --tests "{tests}"'
+
+    if tag:
+        versions = _existing(settings, fw_list, tag)
+    else:
+        print(f"==> building, pushing changed images to {settings.ec2_ecr_repo}")
+        versions = _push_changed(settings, fw_list)
+    print(f"==> syncing code to s3://{settings.ec2_s3_bucket}/code/jero-benchmarks.tar.gz")
+    _sync_code(settings)
+
+    groups = [[fw] for fw in fw_list] if parallel else [fw_list]
+    not_launched: list[str] = []
+    for group in groups:
+        instance_id = _launch_when_free(
+            settings,
+            run_id=run_id,
+            bench_args=bench_args,
+            frameworks=group,
+            versions=versions,
+            max_instances=max_instances,
+        )
+        if instance_id is None:
+            not_launched += group
+            continue
+        tags = " ".join(f"{fw}-{versions[fw]}" for fw in group)
+        stamp = datetime.now(UTC).strftime("%H:%M:%S")
+        print(f"[{stamp}] launched {instance_id} (spot, run {run_id}): {tags}", flush=True)
+        print(f"  uv run yeet ./ec2_tail_logs.py {instance_id}")
+    if not_launched:
+        print(
+            f"\nrelaunch the rest later: uv run yeet ./ec2_launch.py --parallel "
+            f'--run-id {run_id} --frameworks "{" ".join(not_launched)}" ...',
+            file=sys.stderr,
+        )

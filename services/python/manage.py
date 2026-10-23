@@ -1,13 +1,12 @@
 #!/usr/bin/env python
-"""Django's management CLI — only needed to launch Bolt (`runbolt`); the
-other Django variant (Ninja) is served directly over ASGI via serve.sh."""
+"""Django's management CLI — used to launch Bolt (`manage.py runbolt`)."""
 
 import os
 import sys
 
 
 def main() -> None:
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "django_app.settings_bolt")
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "django_app.settings")
     from django.core.management import execute_from_command_line
 
     execute_from_command_line(sys.argv)

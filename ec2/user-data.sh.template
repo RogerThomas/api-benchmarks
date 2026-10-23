@@ -1,10 +1,11 @@
 #!/bin/bash
-# Fire-and-forget EC2 runner: pulls the code from S3, writes a fresh .env
-# (TaglyDB results-backend key only -- AWS auth comes from the instance's
-# IAM profile, never from here), runs `task bench`, uploads the log to S3,
-# then self-terminates. Rendered from this template by ec2_launch.py, which
-# replaces every __TOKEN__ below with a real value -- never edit those in
-# place, they're plain string substitutions, not bash variables.
+# Fire-and-forget EC2 runner: pulls the code from S3 and the prebuilt images
+# from ECR, writes a fresh .env (TaglyDB results-backend key only -- AWS auth
+# comes from the instance's IAM profile, never from here), runs `task bench`,
+# uploads the log to S3, then self-terminates. Rendered from this template by
+# ec2_launch.py, which replaces every __TOKEN__ below with a real value --
+# never edit those in place, they're plain string substitutions, not bash
+# variables.
 set -euo pipefail
 
 # cloud-init runs this as root, whose PATH doesn't include ec2-user's
@@ -14,6 +15,15 @@ export PATH="/home/ec2-user/.local/bin:$PATH"
 
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")
 INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
+# Whatever happens below (even a failed bench), upload the log and shut down:
+# without this, `set -e` would exit early and leave the instance running.
+finish() {
+  aws s3 cp /var/log/jero-bench.log "s3://__S3_BUCKET__/logs/${INSTANCE_ID}.log" || true
+  shutdown -h now
+}
+trap finish EXIT
+exec > >(tee -a /var/log/jero-bench.log) 2>&1
 
 cd /home/ec2-user
 aws s3 cp "s3://__S3_BUCKET__/code/jero-benchmarks.tar.gz" .
@@ -25,8 +35,16 @@ TAGLYDB_API_KEY=__TAGLYDB_API_KEY__
 UPSTREAM_API_KEY=__UPSTREAM_API_KEY__
 ENVEOF
 
-task bench -- __BENCH_ARGS__ 2>&1 | tee /var/log/jero-bench.log
+# Prebuilt images (pushed by ec2_launch.py), retagged to the names compose
+# expects, so the bench runs with --no-build and never compiles anything here.
+# __IMAGES__ is "service=version" pairs, e.g. "jero=2026.10.23.01 runner=...".
+REPO="__ECR_REPO__"
+aws ecr get-login-password --region __AWS_REGION__ | docker login --username AWS --password-stdin "${REPO%%/*}"
+for pair in __IMAGES__; do
+  svc="${pair%%=*}"
+  ref="$REPO:$svc-${pair#*=}"
+  docker pull -q "$ref"
+  if [ "$svc" = postgres ]; then docker tag "$ref" postgres:18-alpine; else docker tag "$ref" "jero-benchmarks-$svc"; fi
+done
 
-aws s3 cp /var/log/jero-bench.log "s3://__S3_BUCKET__/logs/${INSTANCE_ID}.log"
-
-shutdown -h now
+task bench -- __BENCH_ARGS__ --no-build

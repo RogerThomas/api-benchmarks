@@ -23,7 +23,7 @@ services:
     environment:
       UPSTREAM_API_KEY: *upstream_key
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "/bin/busybox", "wget", "-qO-", "http://127.0.0.1:8000/health"]
       interval: 2s
       timeout: 3s
       retries: 40

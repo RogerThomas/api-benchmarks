@@ -10,6 +10,7 @@ dependencies = [
     "rich>=13.0",
     "plumbum>=2.0.2",
     "matplotlib>=3.11.1",
+    "msgspec>=0.19",
 ]
 
 [dependency-groups]
@@ -20,6 +21,9 @@ dev = [
 
 [tool.uv]
 package = false
+# The vendored taglydb client calls lothc's `SyncHTTPClient.build()`, which
+# lothc removed after 0.0.15 -- hold it there until the client is ported.
+constraint-dependencies = ["lothc==0.0.15"]
 
 [tool.uv.sources]
 taglydb = { path = "vendor/taglydb-client" }
@@ -87,9 +91,9 @@ ignore = [
     "S101",   # use of assert detected
     "COM812", # missing-trailing-comma — conflicts with the formatter, ruff's own advice
     "S603",   # subprocess-without-shell-equals-true — every call here is a fixed
-              #   argument list to a trusted tool (docker/uv/k6/git); shell=True
+              #   argument list to a trusted tool (docker/uv/oha/wrk/git); shell=True
               #   would be the actual footgun, not this.
-    "S607",   # start-process-with-partial-path — same reasoning: "docker"/"uv"/"k6"
+    "S607",   # start-process-with-partial-path — same reasoning: "docker"/"uv"/"oha"
               #   are trusted, not attacker-controlled input.
 ]
 

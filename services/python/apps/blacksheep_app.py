@@ -1,19 +1,21 @@
 """Blacksheep benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me).
 
-Settings, the pyreqwest HTTP client and the psqlpy pool live in BlackSheep's DI
+Settings, the lothc HTTP client and the fastpg pool live in BlackSheep's DI
 container (rodi) and are injected into handlers by type. The client and pool are
 opened/closed with ``@app.lifespan`` — BlackSheep's documented pattern for
-resources bound to the application lifecycle.
+resources bound to the application lifecycle. Request and upstream bodies are
+validated with pydantic, which BlackSheep's docs recommend for validation.
 """
 
 import uuid
-from dataclasses import dataclass
+from typing import Literal
 
-import jwt
-import psqlpy
+import fastpg
+import ryjwt
 from blacksheep import Application, FromHeader, FromJSON
 from blacksheep.server.responses import json
-from pyreqwest.client import Client, ClientBuilder
+from lothc import HTTPClient
+from pydantic import BaseModel
 from settings import Settings
 
 _GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
@@ -25,44 +27,43 @@ app.services.register(Settings, instance=Settings())
 @app.lifespan
 async def configure_http_client(app: Application):
     settings = app.services.resolve(Settings)
-    async with (
-        ClientBuilder()
-        .base_url(settings.upstream_url)
-        .default_headers({"authorization": f"Bearer {settings.upstream_api_key}"})
-        .build()
-    ) as client:
-        app.services.register(Client, instance=client)
+    async with HTTPClient(**settings.upstream_client_options) as client:
+        app.services.register(HTTPClient, instance=client)
         yield
 
 
 @app.lifespan
 async def configure_db_pool(app: Application):
     settings = app.services.resolve(Settings)
-    pool = psqlpy.ConnectionPool(
-        username=settings.db_user,
-        password=settings.db_password,
-        host=settings.db_host,
-        port=settings.db_port,
-        db_name=settings.db_name,
-        max_db_pool_size=settings.db_pool_size,
-    )
-    app.services.register(psqlpy.ConnectionPool, instance=pool)
+    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
+    app.services.register(fastpg.Pool, instance=pool)
     yield
-    pool.close()
+    await pool.close()
 
 
-class AuthHeader(FromHeader[str]):
+# Optional, so a missing header is a 401 (like any bad token), not a 400.
+class AuthHeader(FromHeader[str | None]):
     name = "Authorization"
 
 
-def authenticate(authorization: AuthHeader, secret: str) -> dict | None:
-    """Decode the bearer JWT; return the user dict, or None if it's invalid."""
-    token = authorization.value.removeprefix("Bearer ").strip()
+class User(BaseModel):
+    id: str
+    name: str
+
+
+class Claims(BaseModel):
+    sub: str
+    name: str
+
+
+def authenticate(authorization: AuthHeader, key: ryjwt.SecretKey) -> User | None:
+    """Decode the bearer JWT; return the user, or None if it's invalid."""
+    token = (authorization.value or "").removeprefix("Bearer ").strip()
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
-    except jwt.PyJWTError:
+        claims = key.decode(token, into=Claims)
+    except ryjwt.InvalidTokenError:  # includes a token missing sub/name
         return None
-    return {"id": payload["sub"], "name": payload["name"]}
+    return User(id=claims.sub, name=claims.name)
 
 
 # --- Test 1: GET /info -------------------------------------------------------
@@ -87,8 +88,7 @@ async def get_info():
 # --- Test 2: POST /movies (JWT-authenticated) --------------------------------
 
 
-@dataclass
-class MovieIn:
+class MovieIn(BaseModel):
     title: str
     year: int
     director: str
@@ -96,55 +96,69 @@ class MovieIn:
     rating: float
 
 
+class Movie(MovieIn):
+    id: str
+    user: User
+
+
 @app.router.post("/movies")
 async def create_movie(authorization: AuthHeader, data: FromJSON[MovieIn], settings: Settings):
-    user = authenticate(authorization, settings.jwt_secret)
+    user = authenticate(authorization, settings.jwt_key)
     if user is None:
         return json({"error": "invalid token"}, status=401)
-    movie = data.value
-    return json(
-        {
-            "id": str(uuid.uuid4()),
-            "title": movie.title,
-            "year": movie.year,
-            "director": movie.director,
-            "genre": movie.genre,
-            "rating": movie.rating,
-            "user": user,
-        },
-        status=201,
-    )
+    movie = Movie(id=str(uuid.uuid4()), user=user, **data.value.model_dump())
+    return json(movie, status=201)
 
 
 # --- Test 3: GET /catalog (proxy an authenticated upstream) ------------------
 
 
+class Vendor(BaseModel):
+    id: str
+    name: str
+
+
+type Tag = Literal["electronics", "peripherals", "keyboard"]
+
+
+class Product(BaseModel):
+    id: str
+    title: str
+    price: float
+    inStock: bool
+    tags: list[Tag]
+    rating: float
+    description: str
+    vendor: Vendor
+
+
 @app.router.get("/catalog")
-async def catalog(client: Client):
-    # Auth rides on the client's default headers (set once at build time).
-    resp = await client.get("/data").build().send()
-    return json(await resp.json())
+async def catalog(client: HTTPClient):
+    # Auth rides on the client's bearer_token (set once at build time); lothc
+    # validates the upstream body straight into the pydantic model.
+    resp = await client.get("data", into=Product)
+    return json(resp.data)
 
 
 # --- Test 4: GET /users/me (Postgres) ----------------------------------------
 
 
+class Profile(BaseModel):
+    id: str
+    name: str
+    email: str
+    address: str
+    city: str
+    country: str
+
+
 @app.router.get("/users/me")
-async def users_me(authorization: AuthHeader, pool: psqlpy.ConnectionPool, settings: Settings):
-    user = authenticate(authorization, settings.jwt_secret)
+async def users_me(authorization: AuthHeader, pool: fastpg.Pool, settings: Settings):
+    user = authenticate(authorization, settings.jwt_key)
     if user is None:
         return json({"error": "invalid token"}, status=401)
-    async with pool.acquire() as connection:
-        result = await connection.execute(_GET_USER_SQL, [user["id"]])
-    rows = result.result(as_tuple=True)
-    if not rows:
+    try:
+        profile = await pool.select_one(_GET_USER_SQL, user.id, into=Profile)
+    except fastpg.NoRowsError:
         return json({"error": "user not found"}, status=404)
-    row = rows[0]
-    return json({
-        "id": row[0],
-        "name": row[1],
-        "email": row[2],
-        "address": row[3],
-        "city": row[4],
-        "country": row[5],
-    })
+    return json(profile)

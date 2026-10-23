@@ -1,9 +1,10 @@
-// Gin benchmark app — tests 1 (GET info) and 2 (authenticated POST movie).
+// Gin benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me).
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -32,17 +34,24 @@ type Info struct {
 	Nested    Nested   `json:"nested"`
 }
 
+// binding:"required": a missing field is a 400, not a silent zero value.
 type MovieIn struct {
-	Title    string  `json:"title"`
-	Year     int     `json:"year"`
-	Director string  `json:"director"`
-	Genre    string  `json:"genre"`
-	Rating   float64 `json:"rating"`
+	Title    string  `json:"title" binding:"required"`
+	Year     int     `json:"year" binding:"required"`
+	Director string  `json:"director" binding:"required"`
+	Genre    string  `json:"genre" binding:"required"`
+	Rating   float64 `json:"rating" binding:"required"`
 }
 
 type User struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+// The JWT's claims; a token missing sub or name is rejected as invalid.
+type Claims struct {
+	Name string `json:"name"`
+	jwt.RegisteredClaims
 }
 
 type Movie struct {
@@ -115,6 +124,18 @@ func main() {
 		return secret, nil
 	}
 
+	// authenticate verifies the bearer JWT, answering 401 itself on failure.
+	authenticate := func(c *gin.Context) (User, bool) {
+		tokenStr := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+		var claims Claims
+		token, err := jwt.ParseWithClaims(tokenStr, &claims, keyFunc)
+		if err != nil || !token.Valid || claims.Subject == "" || claims.Name == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return User{}, false
+		}
+		return User{ID: claims.Subject, Name: claims.Name}, true
+	}
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -134,14 +155,10 @@ func main() {
 	})
 
 	r.POST("/movies", func(c *gin.Context) {
-		authz := c.GetHeader("Authorization")
-		tokenStr := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
-		token, err := jwt.Parse(tokenStr, keyFunc)
-		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		user, ok := authenticate(c)
+		if !ok {
 			return
 		}
-		claims := token.Claims.(jwt.MapClaims)
 
 		var in MovieIn
 		if err := c.ShouldBindJSON(&in); err != nil {
@@ -151,7 +168,7 @@ func main() {
 		movie := Movie{
 			MovieIn: in,
 			ID:      uuid.NewString(),
-			User:    User{ID: claims["sub"].(string), Name: claims["name"].(string)},
+			User:    user,
 		}
 		c.JSON(http.StatusCreated, movie)
 	})
@@ -174,20 +191,20 @@ func main() {
 	})
 
 	r.GET("/users/me", func(c *gin.Context) {
-		authz := c.GetHeader("Authorization")
-		tokenStr := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
-		token, err := jwt.Parse(tokenStr, keyFunc)
-		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+		user, ok := authenticate(c)
+		if !ok {
 			return
 		}
-		sub := token.Claims.(jwt.MapClaims)["sub"].(string)
 
 		var p Profile
-		err = pool.QueryRow(c.Request.Context(), getUserSQL, sub).
+		err := pool.QueryRow(c.Request.Context(), getUserSQL, user.ID).
 			Scan(&p.ID, &p.Name, &p.Email, &p.Address, &p.City, &p.Country)
-		if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 			return
 		}
 		c.JSON(http.StatusOK, p)

@@ -3,7 +3,7 @@ version: "3"
 # Usage:
 #   task bench                                  # every framework, one at a time, best-of-3
 #   task bench -- --frameworks "jero fastapi"   # just these two, still one at a time
-#   task bench -- --duration 30s --vus 200      # override k6 knobs (see: uv run yeet ./bench.py --help)
+#   task bench -- --duration 30s --vus 200      # override load knobs (see: uv run yeet ./bench.py --help)
 #   task export-results -- 20260813T120000      # re-print a past run's tables
 #   task export-results                         # no run-id: pick from the 36 most recent
 #
@@ -22,9 +22,7 @@ tasks:
 
   bench:
     desc: 'Bench every framework (or --frameworks "a b") one at a time; results land in TaglyDB under one RUN_ID.'
-    cmds:
-      - mkdir -p results
-      - uv run yeet ./bench.py {{.CLI_ARGS}}
+    cmd: uv run yeet ./bench.py {{.CLI_ARGS}}
 
   export-results:
     desc: 'Print the comparison tables for a run (and write a full report + chart + raw results JSON to reports/<run-id>/): task export-results -- <run-id>, or no arg to pick from the 36 most recent.'
@@ -64,9 +62,6 @@ tasks:
           docker compose -f compose.http-clients.yml up --build \
             --abort-on-container-exit --exit-code-from bench
 
-  clean:
-    desc: Remove any leftover pre-TaglyDB local results database (results now live in TaglyDB, not here).
-    cmd: rm -f results/bench.db
 
   format:
     desc: Format all Python code with ruff.

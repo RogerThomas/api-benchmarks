@@ -2,18 +2,24 @@
 3 (proxy an API-key-protected upstream), 4 (GET /users/me from Postgres).
 """
 
-from dataclasses import dataclass, field
-from datetime import timedelta
+from dataclasses import dataclass
 from functools import cached_property
 from typing import Literal
 from uuid import UUID, uuid4
 
-import jwt
-import msgspec
-import psqlpy
-from jero import BaseApp, BaseFactory, Endpoint, HTTPError, JSONResponse, Resource
+import fastpg
+import ryjwt
+from jero import (
+    AuthenticationRequiredError,
+    BaseApp,
+    BaseFactory,
+    Endpoint,
+    JSONResponse,
+    NotFoundError,
+    Resource,
+)
+from lothc import HTTPClient
 from msgspec import Struct
-from pyreqwest.client import Client, ClientBuilder
 from settings import Settings
 
 
@@ -86,17 +92,22 @@ class Credentials(Struct):
     authorization: str
 
 
+class Claims(Struct):
+    sub: str
+    name: str
+
+
 @dataclass(frozen=True, slots=True)
 class JWTAuth:
-    _jwt_secret: str
+    _jwt_key: ryjwt.SecretKey
 
     def authenticate(self, headers: Credentials) -> User:
         token = headers.authorization.removeprefix("Bearer ").strip()
         try:
-            payload = jwt.decode(token, self._jwt_secret, algorithms=["HS256"])
-        except jwt.PyJWTError as exc:
-            raise HTTPError() from exc
-        return User(id=payload["sub"], name=payload["name"])
+            claims = self._jwt_key.decode(token, into=Claims)
+        except ryjwt.InvalidTokenError as exc:
+            raise AuthenticationRequiredError() from exc
+        return User(id=claims.sub, name=claims.name)
 
 
 class MoviesResource(Resource, path="/movies"):
@@ -134,25 +145,14 @@ class Product(CamelStruct):
     vendor: Vendor
 
 
-@dataclass
-class UpstreamClient:
-    _client: Client
-    _product_decoder: msgspec.json.Decoder[Product] = field(
-        default_factory=lambda: msgspec.json.Decoder(Product)
-    )
-
-    async def fetch_product(self) -> Product:
-        response = await self._client.get("/data").build().send()
-        # The body is consume-once (reqwest semantics): read bytes, decode from those.
-        return self._product_decoder.decode(await response.bytes())
-
-
 @dataclass(slots=True)
 class CatalogService:
-    _client: UpstreamClient
+    _client: HTTPClient
 
     async def fetch(self) -> Product:
-        return await self._client.fetch_product()
+        # lothc decodes the upstream body straight into the Product Struct.
+        response = await self._client.get("data", into=Product)
+        return response.data
 
 
 @dataclass
@@ -177,26 +177,17 @@ class Profile(CamelStruct):
 
 @dataclass(slots=True)
 class UserService:
-    _pool: psqlpy.ConnectionPool
+    _pool: fastpg.Pool
 
     async def get_profile(self, user_id: str) -> Profile:
-        async with self._pool.acquire() as connection:
-            result = await connection.execute(
+        try:
+            return await self._pool.select_one(
                 "SELECT id, name, email, address, city, country FROM users WHERE id = $1",
-                [user_id],
+                user_id,
+                into=Profile,
             )
-        rows = result.result(as_tuple=True)
-        if not rows:
-            raise HTTPError()
-        db_profile = rows[0]
-        return Profile(
-            id=db_profile[0],
-            name=db_profile[1],
-            email=db_profile[2],
-            address=db_profile[3],
-            city=db_profile[4],
-            country=db_profile[5],
-        )
+        except fastpg.NoRowsError:
+            raise NotFoundError() from None
 
 
 @dataclass
@@ -216,35 +207,15 @@ class Factory(BaseFactory):
         return Settings()
 
     def create_auth(self) -> JWTAuth:
-        return JWTAuth(self._settings.jwt_secret)
+        return JWTAuth(self._settings.jwt_key)
 
     async def create_catalog_service(self) -> CatalogService:
-        upstream_client = UpstreamClient(
-            await self._aenter(
-                ClientBuilder()
-                .base_url(self._settings.upstream_url)
-                .default_headers({"authorization": f"Bearer {self._settings.upstream_api_key}"})
-                .error_for_status()
-                .connect_timeout(timedelta(seconds=1))
-                .read_timeout(timedelta(seconds=5))
-                .timeout(timedelta(seconds=10))
-                .follow_redirects(False)
-                .no_proxy()
-                .build()
-            ),
-        )
-        return CatalogService(upstream_client)
+        client = await self._aenter(HTTPClient(**self._settings.upstream_client_options))
+        return CatalogService(client)
 
-    def create_user_service(self) -> UserService:
-        pool = self._enter(
-            psqlpy.ConnectionPool(
-                username=self._settings.db_user,
-                password=self._settings.db_password,
-                host=self._settings.db_host,
-                port=self._settings.db_port,
-                db_name=self._settings.db_name,
-                max_db_pool_size=self._settings.db_pool_size,
-            )
+    async def create_user_service(self) -> UserService:
+        pool = await self._aenter(
+            await fastpg.create_pool(self._settings.db_dsn, max_size=self._settings.db_pool_size)
         )
         return UserService(pool)
 
@@ -253,7 +224,7 @@ class App(BaseApp[Factory]):
     async def wire(self) -> None:
         auth = self._factory.create_auth()
         catalog = await self._factory.create_catalog_service()
-        users = self._factory.create_user_service()
+        users = await self._factory.create_user_service()
         self._include_endpoint(InfoEndpoint())
         self._include_endpoint(CatalogEndpoint(catalog))
         self._include_endpoint(UsersMeEndpoint(users), auth=auth)

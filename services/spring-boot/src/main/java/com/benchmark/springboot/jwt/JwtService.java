@@ -11,7 +11,7 @@ import javax.crypto.SecretKey;
 import org.springframework.stereotype.Service;
 
 // Verifies the shared HS256 token every framework in this benchmark mints the
-// same way (see loadtest/lib/common.js) — same contract as PyJWT elsewhere.
+// same way (see loadtest/lib/common.js) — same contract as ryjwt elsewhere.
 @Service
 public class JwtService {
 
@@ -39,7 +39,9 @@ public class JwtService {
         } catch (JwtException | IllegalArgumentException e) {
             throw new UnauthorizedException();
         }
-        if (claims.getSubject() == null || claims.getSubject().isBlank()) {
+        String name = claims.get("name", String.class);
+        if (claims.getSubject() == null || claims.getSubject().isBlank()
+                || name == null || name.isBlank()) {
             throw new UnauthorizedException();
         }
         return claims;

@@ -1,6 +1,6 @@
 -- Schema + seed for test 4 (GET /users/me). Loaded by Postgres on first start
 -- (mounted into /docker-entrypoint-initdb.d/). The seeded id matches the JWT
--- `sub` minted by the k6 load test (loadtest/lib/common.js).
+-- `sub` minted by the load test (loadtest/run.py's _token).
 CREATE TABLE IF NOT EXISTS users (
     id      text PRIMARY KEY,
     name    text NOT NULL,

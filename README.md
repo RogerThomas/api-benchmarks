@@ -5,7 +5,7 @@ Benchmarks comparing API frameworks using **idiomatic, framework-recommended cod
 
 Everything runs inside docker. Frameworks are benched **one at a time** — for a given
 run, exactly one framework container is ever alive alongside the dependent services
-(Postgres, the upstream, the k6 runner), so no two frameworks ever share a core or
+(Postgres, the upstream, the load-generator runner), so no two frameworks ever share a core or
 contend for host resources.
 
 > **Disclosure**: I'm also the author of [jero](https://pypi.org/project/jero/), one of
@@ -20,13 +20,13 @@ contend for host resources.
 ```bash
 task bench                                     # every framework, one at a time, best-of-3
 task bench -- --frameworks "jero fastapi"      # just these two, still one at a time
-task bench -- --duration 30s --vus 200         # override k6 knobs (see: uv run yeet ./bench.py --help)
+task bench -- --duration 30s --vus 200         # override load knobs (see: uv run yeet ./bench.py --help)
 task export-results -- 20260813T120000         # re-print a past run's tables
 ```
 
 `task bench` (`bench.py`) generates one **RUN_ID** — the kickoff timestamp — and, for
 each name in `--frameworks`, brings up `compose.base.yml` (Postgres + the upstream + the
-k6 runner) plus that framework's own `compose.<fw>.yml`, waits for the runner to finish
+load-generator runner) plus that framework's own `compose.<fw>.yml`, waits for the runner to finish
 every test, tears the pair back down, then moves to the next framework. Every
 framework's results land in [TaglyDB](https://api.taglydb.com) tagged with the
 shared RUN_ID — that's what ties a multi-framework run together. At the end, `bench.py` hands off to
@@ -40,65 +40,67 @@ for the full list.
 
 ### Best of N
 
-Every (framework, test) pair runs `RUNS` times (default **3**) — smoothing out noise —
-and the attempt with the highest req/s is kept. That's what the comparison tables use;
-every attempt is still recorded in TaglyDB (tagged `is_best` for the winner) for
-transparency.
+Every (framework, test) pair starts with an untimed 3s **warm-up** (so lazily-opened
+clients/pools and JIT warm-up never land in a measured attempt), then runs `RUNS` times
+(default **3**) — smoothing out noise — and the attempt with the highest req/s is kept.
+That's what the comparison tables use; every attempt is still recorded in TaglyDB
+(tagged `is_best` for the winner) for transparency.
 
-Other knobs (CLI flags — see `uv run yeet ./bench.py --help`): `--vus` (k6 concurrency,
+**Load generator:** [wrk](https://github.com/wg/wrk) (C, default — what TechEmpower
+uses) or [oha](https://github.com/hatoo/oha) (Rust, `--loadgen oha`), closed loop with
+`--vus` connections, on two dedicated cores. On EC2 the two agreed within 1–7% on every
+test (`reports/20261023T083334-{wrk,oha}`), wrk slightly higher throughout. k6 was dropped: on those two cores it saturated at
+~40–50k req/s, so it was capping the fastest frameworks instead of measuring them.
+
+**Success %** is the share of requests that got the expected status. Before the load, a
+correctness pass also checks the *body* of 100 responses (key fields per test, e.g.
+`createdAt`, the echoed `title`, the user's `city`; see `SCENARIOS` in `loadtest/run.py`);
+if any is wrong the whole test is reported as 0% success, so a fast-but-wrong response can
+never pass as a success.
+
+Other knobs (CLI flags — see `uv run yeet ./bench.py --help`): `--vus` (concurrent connections,
 default 100), `--runs` (attempts per test, default 3), `--workers` (server workers per
-service, default 1), `--python-server` (`granian` default, or `uvicorn`),
+service, default 1), `--loadgen` (`wrk` default, or `oha`),
 `--frameworks`, `--tests`.
 
 Each framework is pinned to **one dedicated CPU core / 2 GB** (compose `cpuset`); the
-infra (Postgres, upstream, k6 runner) runs on other cores. Since only one framework is
+infra (Postgres, upstream, load-generator runner) runs on other cores. Since only one framework is
 ever alive at a time, every framework gets the *same* core — there's no cross-framework
 contention to pin apart (see Fairness).
 
 At the end of a run it prints one table per test — throughput, latency, success rate,
 and per-container resource use (CPU/mem + sparklines), rows sorted by req/s with
-vs-jero multipliers — and every attempt is recorded in TaglyDB. See
-`results/FINAL-*.md` for examples of the format from earlier (pre-TaglyDB) runs; a
-trimmed row looks like:
-
-```
-1 - GET /info
-│ Framework │ req/s  │ vs    │ mean   │ vs    │ p99    │ vs    │ succ%  │ memPk │ cpuAv │ cpu ~            │
-│ gin       │ ~54.6k │ x1.13 │ 1.78ms │ x1.14 │ 9.23ms │ x1.04 │ 100.00 │ 14M   │ 71%   │ ▇▇▇▇████████████ │
-│ jero      │ ~48.3k │ x1.00 │ 2.03ms │ x1.00 │ 9.60ms │ x1.00 │ 100.00 │ 91M   │ 90%   │ ████████████████ │
-```
+vs-jero multipliers — and every attempt is recorded in TaglyDB. It also writes a full
+report (markdown, chart, raw JSON) to `reports/<run-id>/`; see
+`reports/20261023T091453/report.md` for a complete one.
 
 ## Frameworks & servers
 
 | Framework | Language | Server (1 worker) | Outbound HTTP client | DB driver |
 | --- | --- | --- | --- | --- |
-| jero, FastAPI, Litestar, Blacksheep, Django Ninja | Python 3.13 | granian ASGI (`--loop uvloop`) | pyreqwest | psqlpy |
-| Flask | Python 3.13 | granian WSGI | pyreqwest (sync) | psycopg |
-| Robyn, Pyronova, Django Bolt | Python 3.13 | built-in Rust server (Bolt: `manage.py runbolt`; Pyronova in `gil` mode) | pyreqwest | psqlpy |
+| jero, FastAPI, Litestar, Blacksheep | Python 3.14 | [peregrine](https://github.com/grepjava/peregrine) ASGI (uvloop) | lothc | fastpg |
+| Flask | Python 3.14 | peregrine WSGI (views inline) | lothc (sync) | psycopg |
+| Robyn, Django Bolt | Python 3.14 | built-in Rust server (Bolt: `manage.py runbolt`) | lothc | fastpg |
 | Gin | Go | net/http (`GOMAXPROCS=1`) | net/http | pgx |
 | Elysia | Bun / TS | Bun native | `fetch` | Bun `SQL` |
 | Spring Boot | Java 25 | embedded Tomcat, virtual threads | RestClient (Apache HttpClient5) | JdbcTemplate (HikariCP) |
 
 All apps use idiomatic, framework-recommended code (no deep optimisations). The Python
-ASGI frameworks share granian as the server so the variable under test is the
-*framework*, not the server (switch to uvicorn with `--python-server uvicorn` — Robyn, Pyronova and
-Django Bolt ship their own servers and ignore this knob). The two Django frameworks query
-the shared `users` table with raw psqlpy — the same driver every other async framework in
+ASGI frameworks and Flask share peregrine as the server so the variable under test is the
+*framework*, not the server (Robyn and Django Bolt ship their own servers and
+aren't run under peregrine). Python ASGI apps run on uvloop. Django Bolt queries
+the shared `users` table with raw fastpg — the same driver every other async framework in
 this fleet uses — rather than Django's ORM or a different raw driver; either would be
 doing different work than everyone else rather than a fair idiomatic difference. (Django
 itself still depends on psycopg internally for its own `DATABASES` config to boot, even
 though the benchmarked query path never touches it.)
 
-The whole Python field runs **Python 3.13.14** (pinned base image) so **Robyn** — which
-has no `manylinux_aarch64` (Linux/arm64) wheel for CPython 3.14 yet, only for 3.13 —
-runs natively rather than emulated. (Checked 2026-08-10: Robyn 0.88.0 ships a cp314
-wheel for macOS and manylinux x86_64, but still not aarch64 Linux.) Once that wheel
-lands, bump the base image back to 3.14.
+The whole Python field runs **Python 3.14.9** (pinned base image): fastpg needs
+t-strings (>= 3.14.3), and its vendored wheel is cp314-only, which also rules out 3.15
+for now. **Robyn** publishes no cp314 wheels (and no sdist), so its Dockerfile stage
+builds the v0.88.0 release tarball with a Rust toolchain. Flask stays on psycopg because
+fastpg is async-only.
 
-**Pyronova** runs in `mode="gil"`, meaning all handlers run on the main interpreter. Its
-default sub-interpreter mode can't load the shared C extensions (with 2.7.0, pydantic-core
-raises and pyreqwest hangs). It has no `manylinux_aarch64` wheel either, so its
-Dockerfile stage builds it from the sdist with a Rust toolchain.
 
 ## Tests
 
@@ -107,16 +109,17 @@ Dockerfile stage builds it from the sdist with a Rust toolchain.
    UUID `id` and the authenticated `user`.
 3. **GET /catalog** — fetches a static JSON payload from the fast Rust (axum) `upstream`
    service and returns it. Public endpoint; the service-to-service call carries a bearer
-   API key the upstream verifies. With every Python framework on the same Rust HTTP
-   client (pyreqwest), this test differentiates *frameworks* — historically, a pure-Python
-   client (niquests) capped everyone at ~3k req/s and masked the framework entirely.
+   API key the upstream verifies. With every Python framework on the same Rust-backed HTTP
+   client (lothc, a typed wrapper over pyreqwest), this test differentiates *frameworks* —
+   historically, a pure-Python client (niquests) capped everyone at ~3k req/s and masked
+   the framework entirely.
 4. **GET /users/me** — JWT-authenticated; id from the token, the rest from a Postgres
    `users` row.
 
 Every JWT-authenticated endpoint (test 2, test 4) decodes the same `Authorization:
-Bearer <token>` header by hand with PyJWT — including the two Django frameworks, whose
-own JWT integrations (django-ninja-jwt's cookie auth, Bolt's `JWTAuthentication` tied to
-`django.contrib.auth.User`) would each be doing different work than the rest of the fleet.
+Bearer <token>` header by hand with ryjwt — including Django Bolt, whose own
+`JWTAuthentication` is tied to `django.contrib.auth.User` and would be doing different
+work than the rest of the fleet.
 
 ## Fairness & methodology
 
@@ -130,24 +133,27 @@ The goal is *idiomatic per framework*, held to equal conditions and made scrutab
   as the host itself is otherwise idle. (Earlier versions of this benchmark ran the full
   fleet concurrently, each pinned to its own core; that measures *"the framework under
   fleet-wide contention,"* a different and reasonable question, but not what this repo
-  now measures — see `results/FINAL-*.md` for that era's numbers, which aren't directly
-  comparable to newer isolated runs.)
-- **One worker each.** Every service runs 1 worker: granian `--workers 1`, Gin
+  now measures.)
+- **Nothing else on the measured core.** Each framework's healthcheck probes every 1s
+  only until it's healthy, then hourly, so no probe runs mid-bench (a Python probe starts
+  a whole interpreter, so this would otherwise cost some frameworks more than others).
+  Request/access logging is off everywhere (Robyn explicitly, via `--log-level WARNING`).
+- **One worker each.** Every service runs 1 worker: peregrine `--workers 1`, Gin
   `GOMAXPROCS=1`, Bun's single JS thread, Bolt `--processes 1`. Flask is synchronous
-  (granian WSGI, `--blocking-threads 1`). A thread sweep (1/2/4/8) confirmed **1 is
+  (peregrine WSGI, views called inline — no `--wsgi-threads` pool). A thread sweep
+  (1/2/4/8, run under granian's `--blocking-threads`) confirmed **1 is
   fastest on every test — including the I/O-bound ones**: on a single capped core the
   GIL + thread scheduling swamp any I/O-overlap benefit, so more threads only add
   overhead and memory. Flask trailing on I/O is the honest cost of the sync model on one
-  core, not a handicap we imposed. (granian's *default* pool is worse still — it sizes
-  to host cores, ignoring the single-core pin, and thrashes.)
+  core, not a handicap we imposed.
 - **One *core* each — `cpuset` affinity.** `WORKERS=1` bounds worker *processes*, not
-  threads: granian's Rust HTTP runtime and GIL-releasing extensions (`msgspec`, the
-  `psqlpy`/`psycopg` drivers) run on their own threads and would otherwise spread across
+  threads: peregrine's Swift HTTP runtime and GIL-releasing extensions (`msgspec`, the
+  `fastpg`/`psycopg` drivers) run on their own threads and would otherwise spread across
   cores. Each framework is pinned to a single core, which confines all its threads to
   one core — the honest apples-to-apples cap. We use affinity (`cpuset`) rather than a
   CFS quota (`cpus: "1"`) deliberately: a quota *throttles* a saturated multi-threaded
   container at each 100 ms scheduler period, adding tens-of-ms stalls to P99; affinity
-  just says "run only here," so the tail stays clean. Infra (Postgres, upstream, k6
+  just says "run only here," so the tail stays clean. Infra (Postgres, upstream, load-generator
   runner) gets its own separate cores so it never bottlenecks the framework under test.
   **Caveat on Apple Silicon (Docker Desktop on Mac):** `cpuset` pins a container to a
   *virtual* CPU number inside the Linux VM — it does not choose which physical core that
@@ -159,8 +165,10 @@ The goal is *idiomatic per framework*, held to equal conditions and made scrutab
   on bare-metal Linux with uniform cores; on Apple Silicon it's a real, unresolved source
   of noise, not something this harness currently controls for.
 - **Equal resource budgets.** DB pool and outbound-HTTP pool are **64** for every
-  framework/language (Python/Django `db_pool_size`, Gin `pgx MaxConns` +
-  `MaxConnsPerHost`, Bun `SQL max` + `BUN_CONFIG_MAX_HTTP_REQUESTS=64`). The Bun fetch
+  framework/language (Python `db_pool_size` + `http_pool_size` — the latter as lothc's
+  `max_connections`, one shared client config in `services/python/settings.py` — Gin
+  `pgx MaxConns` + `MaxConnsPerHost`, Bun `SQL max` + `BUN_CONFIG_MAX_HTTP_REQUESTS=64`,
+  Spring HikariCP + HttpClient5 pool). The Bun fetch
   cap matters beyond parity: Bun keeps a 64-connection keep-alive pool per host but does
   **not** queue overflow — beyond 64 concurrent fetches it opens one-shot connections
   that flood TIME_WAIT and exhaust the container's ephemeral ports (~28k) within
@@ -174,30 +182,27 @@ The goal is *idiomatic per framework*, held to equal conditions and made scrutab
   | jero | msgspec Struct | typed (msgspec) | msgspec |
   | FastAPI | pydantic | typed (pydantic) + response-model re-validate | pydantic |
   | Litestar | msgspec Struct | typed (msgspec) | msgspec |
-  | Blacksheep | dataclass bind | passthrough dict | orjson |
-  | Robyn | pydantic (native param) | typed (pydantic) | stdlib `json` / pydantic |
-  | Pyronova | pydantic (native `model=`) | typed (pydantic) | stdlib `json` / pydantic |
+  | Blacksheep | pydantic (`FromJSON`) | typed (pydantic) | stdlib `json` (BlackSheep's default) |
+  | Robyn | pydantic (native param) | typed (pydantic) | orjson (`jsonify`/dicts) / pydantic |
   | Flask | pydantic | typed (pydantic) | stdlib `json` |
-  | Django Ninja | pydantic (Schema) | passthrough bytes | pydantic |
-  | Django Bolt | msgspec Struct | passthrough bytes | msgspec |
+  | Django Bolt | msgspec Struct | typed (msgspec) + response re-validate | msgspec |
   | Gin | `ShouldBindJSON` struct | typed struct | `encoding/json` |
   | Elysia | typebox schema | passthrough object | Bun native |
   | Spring Boot | jakarta bean validation (record) | typed (Jackson) | Jackson |
 
   **Known, intended differences** (each framework's real idiomatic behaviour — kept, not
   normalised away): the JSON **serializer** column (stdlib json is slower than
-  msgspec/orjson/native — relevant for Flask); **FastAPI** additionally re-validates the
-  *response* against its `response_model`; Blacksheep/Elysia/Django Ninja/Django Bolt
-  return the upstream payload straight through as bytes/dict rather than a typed model;
-  and the two Django frameworks return **snake_case** field names (pydantic's/msgspec's
-  default) where the other Python frameworks return camelCase; **Spring Boot**'s Jackson
+  msgspec/orjson/native — relevant for Flask and Blacksheep, both on their framework's
+  default); **FastAPI** and **Django Bolt** additionally re-validate the *response*
+  against its declared model (both frameworks' default behaviour); **Elysia** returns the
+  upstream payload as a parsed-but-unvalidated object; **Spring Boot**'s Jackson
   binding coerces a numeric field given as a JSON string (e.g. `"year": "2020"`) rather
   than rejecting it like pydantic/msgspec do. These are visible here so a number is never
   mistaken for pure framework speed.
 
 ### Resource use (CPU / memory)
 
-Each run also records what the framework *cost* to hit its numbers: during every k6
+Each run also records what the framework *cost* to hit its numbers: during every
 attempt the runner polls `docker stats` (cgroup accounting) on the framework's container.
 The report shows, per framework × test:
 

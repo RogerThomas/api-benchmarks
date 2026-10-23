@@ -34,6 +34,8 @@ const app = new Elysia()
       name: "jwt",
       secret: process.env.JWT_SECRET!,
       alg: "HS256",
+      // verify() returns false (-> 401) for a token missing sub or name.
+      schema: t.Object({ sub: t.String(), name: t.String() }),
     }),
   )
   .post(

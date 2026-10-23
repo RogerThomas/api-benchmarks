@@ -1,97 +1,127 @@
-# Multi-stage build: one stage per Python framework. Each stage syncs only its
-# own uv dependency group into a fresh, isolated venv so deps never interfere.
+# Multi-stage build: one stage per Python framework. Each framework syncs only
+# its own uv dependency group into a fresh, isolated venv (so deps never
+# interfere) in a throwaway `<fw>-build` stage. The shipped image is distroless:
+# glibc, the interpreter, that venv and the app -- no shell, no package
+# manager, no uv.
 # Build a single framework with:  docker build --target jero .
+#
+# The interpreter is uv's standalone CPython (python-build-standalone),
+# installed under /python and copied into the runtime at the same path, so the
+# venv's interpreter symlinks resolve unchanged. (Distroless's own python image
+# is Debian's 3.13; fastpg needs t-strings, i.e. >= 3.14.3.)
 
-FROM python:3.13.14-slim-trixie AS base
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
-WORKDIR /app
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+FROM debian:trixie-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /bin/uv
+ENV UV_PYTHON_INSTALL_DIR=/python \
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_PYTHON=3.14.9 \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    PATH="/app/.venv/bin:$PATH"
+    UV_LINK_MODE=copy
+RUN uv python install 3.14.9
+# A runtime copy without what no app here uses (pip, IDLE, Tcl/Tk, headers);
+# the build stages keep the full install, headers included, for compiling.
+RUN cp -a /python /python-runtime \
+    && cd /python-runtime/cpython-3.14.9-* \
+    && rm -rf include share lib/tcl* lib/tk* lib/itcl* lib/thread* lib/libtcl* lib/libtk* \
+        lib/python3.14/site-packages/pip* lib/python3.14/ensurepip \
+        lib/python3.14/idlelib lib/python3.14/tkinter lib/python3.14/turtledemo \
+        lib/python3.14/lib-dynload/_tkinter*
+WORKDIR /app
 COPY pyproject.toml uv.lock ./
-COPY settings.py ./settings.py
-COPY serve.sh ./serve.sh
+# uv sync --locked reads every path source in the lock, even ones this group doesn't use.
+COPY vendor ./vendor
 
-# ASGI frameworks (jero/fastapi/litestar/blacksheep) launch via serve.sh, which
-# selects granian or uvicorn from $PYTHON_SERVER. Flask is WSGI (granian, pinned
-# to one blocking thread for 1-core parity); Robyn ships its own server.
-
-# --- jero --------------------------------------------------------------------
-FROM base AS jero
-RUN uv sync --locked --no-default-groups --group jero
-COPY apps/jero_app.py ./jero_app.py
-EXPOSE 8000
-CMD ["sh", "serve.sh", "jero_app:app", "0.0.0.0", "8000"]
-
-# --- fastapi -----------------------------------------------------------------
-FROM base AS fastapi
-RUN uv sync --locked --no-default-groups --group fastapi
-COPY apps/fastapi_app.py ./fastapi_app.py
-EXPOSE 8000
-CMD ["sh", "serve.sh", "fastapi_app:app", "0.0.0.0", "8000"]
-
-# --- litestar ----------------------------------------------------------------
-FROM base AS litestar
-RUN uv sync --locked --no-default-groups --group litestar
-COPY apps/litestar_app.py ./litestar_app.py
-EXPOSE 8000
-CMD ["sh", "serve.sh", "litestar_app:app", "0.0.0.0", "8000"]
-
-# --- flask (WSGI) ------------------------------------------------------------
-FROM base AS flask
-RUN uv sync --locked --no-default-groups --group flask
-COPY apps/flask_app.py ./flask_app.py
-EXPOSE 8000
-CMD ["sh", "-c", "granian --interface wsgi --host 0.0.0.0 --port 8000 --workers ${WORKERS:-1} --blocking-threads 1 flask_app:app"]
-
-# --- blacksheep --------------------------------------------------------------
-FROM base AS blacksheep
-RUN uv sync --locked --no-default-groups --group blacksheep
-COPY apps/blacksheep_app.py ./blacksheep_app.py
-EXPOSE 8000
-CMD ["sh", "serve.sh", "blacksheep_app:app", "0.0.0.0", "8000"]
-
-# --- robyn (own server) ------------------------------------------------------
-FROM base AS robyn
-RUN uv sync --locked --no-default-groups --group robyn
-COPY apps/robyn_app.py ./robyn_app.py
-EXPOSE 8000
-CMD ["sh", "-c", "python robyn_app.py --processes 1 --workers ${WORKERS:-1}"]
-
-# --- pyronova (own server) ---------------------------------------------------
-# PyPI only ships manylinux x86_64 wheels, so on linux/arm64 (Apple Silicon,
-# Graviton) uv builds it from the sdist: needs a Rust toolchain + C compiler.
-# Built in a throwaway stage so the runtime image carries only the venv.
-FROM base AS pyronova-build
+# Rust toolchain + C compiler, for the frameworks uv has to build from source.
+FROM build AS build-rust
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=rust:1-slim-trixie /usr/local/cargo /usr/local/cargo
-COPY --from=rust:1-slim-trixie /usr/local/rustup /usr/local/rustup
+COPY --from=rust:1.99-slim-trixie /usr/local/cargo /usr/local/cargo
+COPY --from=rust:1.99-slim-trixie /usr/local/rustup /usr/local/rustup
 ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup \
     PATH="/usr/local/cargo/bin:$PATH"
-RUN uv sync --locked --no-default-groups --group pyronova
 
-FROM base AS pyronova
-COPY --from=pyronova-build /app/.venv /app/.venv
-COPY apps/pyronova_app.py ./pyronova_app.py
+# What every framework image starts from: distroless (glibc + libgcc/libstdc++),
+# pinned by digest, plus the interpreter.
+FROM gcr.io/distroless/cc-debian13@sha256:b2e43dc72acf58a146ed6feaf350806ae3bf4243eb5c68062d06bc13228ca2bd AS runtime
+COPY --from=build /python-runtime /python
+WORKDIR /app
+ENV PATH="/app/.venv/bin:$PATH"
+COPY settings.py serve.py ./
 EXPOSE 8000
-CMD ["python", "pyronova_app.py"]
 
-# --- django-ninja (ASGI, via serve.sh) ---------------------------------------
-FROM base AS django-ninja
-RUN uv sync --locked --no-default-groups --group django-ninja
-COPY manage.py ./manage.py
-COPY django_app ./django_app
-ENV DJANGO_SETTINGS_MODULE=django_app.settings_ninja
-EXPOSE 8000
-CMD ["sh", "serve.sh", "django_app.asgi:application", "0.0.0.0", "8000"]
+# ASGI frameworks (jero/fastapi/litestar/blacksheep) and Flask (WSGI) all
+# launch under peregrine via serve.py. Flask runs its views inline on the
+# worker (peregrine's default, no --wsgi-threads pool) for 1-core parity.
+# Robyn and Django Bolt ship their own servers.
+#
+# The uv cache lives in a BuildKit cache mount: it speeds up rebuilds here and
+# never lands in an image layer.
+
+# --- jero --------------------------------------------------------------------
+FROM build AS jero-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group jero
+
+FROM runtime AS jero
+COPY --from=jero-build /app/.venv /app/.venv
+COPY apps/jero_app.py ./jero_app.py
+CMD ["python", "serve.py", "peregrine", "jero_app:app"]
+
+# --- fastapi -----------------------------------------------------------------
+FROM build AS fastapi-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group fastapi
+
+FROM runtime AS fastapi
+COPY --from=fastapi-build /app/.venv /app/.venv
+COPY apps/fastapi_app.py ./fastapi_app.py
+CMD ["python", "serve.py", "peregrine", "fastapi_app:app"]
+
+# --- litestar ----------------------------------------------------------------
+FROM build AS litestar-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group litestar
+
+FROM runtime AS litestar
+COPY --from=litestar-build /app/.venv /app/.venv
+COPY apps/litestar_app.py ./litestar_app.py
+CMD ["python", "serve.py", "peregrine", "litestar_app:app"]
+
+# --- flask (WSGI) ------------------------------------------------------------
+FROM build AS flask-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group flask
+
+FROM runtime AS flask
+COPY --from=flask-build /app/.venv /app/.venv
+COPY apps/flask_app.py ./flask_app.py
+CMD ["python", "serve.py", "peregrine", "flask_app:app"]
+
+# --- blacksheep --------------------------------------------------------------
+FROM build AS blacksheep-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group blacksheep
+
+FROM runtime AS blacksheep
+COPY --from=blacksheep-build /app/.venv /app/.venv
+COPY apps/blacksheep_app.py ./blacksheep_app.py
+CMD ["python", "serve.py", "peregrine", "blacksheep_app:app"]
+
+# --- robyn (own server) ------------------------------------------------------
+# No cp314 wheels on PyPI: uv builds it from the release tarball (Rust + C).
+FROM build-rust AS robyn-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group robyn
+
+FROM runtime AS robyn
+COPY --from=robyn-build /app/.venv /app/.venv
+COPY apps/robyn_app.py ./robyn_app.py
+CMD ["python", "serve.py", "robyn"]
 
 # --- django-bolt (own server: manage.py runbolt) -----------------------------
-FROM base AS django-bolt
-RUN uv sync --locked --no-default-groups --group django-bolt
+FROM build AS django-bolt-build
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --locked --no-default-groups --group django-bolt
+
+FROM runtime AS django-bolt
+COPY --from=django-bolt-build /app/.venv /app/.venv
 COPY manage.py ./manage.py
 COPY django_app ./django_app
-ENV DJANGO_SETTINGS_MODULE=django_app.settings_bolt
-EXPOSE 8000
-CMD ["sh", "-c", "python manage.py runbolt --host 0.0.0.0 --port 8000 --processes ${WORKERS:-1}"]
+ENV DJANGO_SETTINGS_MODULE=django_app.settings
+CMD ["python", "serve.py", "django-bolt"]

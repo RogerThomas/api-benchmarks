@@ -1,7 +1,7 @@
 [project]
 name = "jero-benchmarks-runner"
 version = "0.0.0"
-description = "In-container k6 orchestration for one framework's benchmark slice."
+description = "In-container load-test orchestration (oha/wrk) for one framework's benchmark slice."
 requires-python = ">=3.13"
 dependencies = [
     "taglydb",
@@ -12,6 +12,9 @@ dependencies = [
 
 [tool.uv]
 package = false
+# The vendored taglydb client calls lothc's `SyncHTTPClient.build()`, which
+# lothc removed after 0.0.15 -- hold it there until the client is ported.
+constraint-dependencies = ["lothc==0.0.15"]
 
 [tool.uv.sources]
 taglydb = { path = "../vendor/taglydb-client" }

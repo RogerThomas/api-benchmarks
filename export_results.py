@@ -21,8 +21,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
-from typing import Any
 
+import msgspec
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from rich.console import Console
 from rich.table import Table
@@ -59,17 +59,18 @@ class Run:
     vus: int
     best_of: int
     workers: int
-    python_server: str
-    loop: str | None
-    hostname: str | None
-    ec2_ami_id: str | None
-    ec2_instance_type: str | None
-    aws_region: str | None
+    python_server: str | None = None  # only on old runs; peregrine since
+    loop: str | None = None  # only set on old runs, from when --loop existed
+    loadgen: str | None = None
+    hostname: str | None = None
+    ec2_ami_id: str | None = None
+    ec2_instance_type: str | None = None
+    aws_region: str | None = None
 
 
 @dataclass
 class Result:
-    """One k6 attempt for (run, framework, test) — `is_best` marks the
+    """One load-generator attempt for (run, framework, test) — `is_best` marks the
     highest-scoring attempt per (run, framework, test), the one this script
     compares across frameworks."""
 
@@ -85,52 +86,13 @@ class Result:
     failed_rate: float
     total_requests: int
     is_best: bool
-    peak_rss_mb: float | None
-    avg_rss_mb: float | None
-    avg_cpu_pct: float | None
-    peak_cpu_pct: float | None
-    cpu_spark: str | None
-    mem_spark: str | None
-
-
-def _run_from_data(data: dict[str, Any]) -> Run:
-    return Run(
-        run_id=data["run_id"],
-        created_at=datetime.fromisoformat(data["created_at"]),
-        duration=data["duration"],
-        vus=data["vus"],
-        best_of=data["best_of"],
-        workers=data["workers"],
-        python_server=data["python_server"],
-        loop=data.get("loop"),
-        hostname=data.get("hostname"),
-        ec2_ami_id=data.get("ec2_ami_id"),
-        ec2_instance_type=data.get("ec2_instance_type"),
-        aws_region=data.get("aws_region"),
-    )
-
-
-def _result_from_data(data: dict[str, Any]) -> Result:
-    return Result(
-        framework=data["framework"],
-        test=data["test"],
-        attempt=data["attempt"],
-        reqs_per_sec=data["reqs_per_sec"],
-        latency_avg_ms=data["latency_avg_ms"],
-        latency_p50_ms=data["latency_p50_ms"],
-        latency_p75_ms=data["latency_p75_ms"],
-        latency_p90_ms=data["latency_p90_ms"],
-        latency_p99_ms=data["latency_p99_ms"],
-        failed_rate=data["failed_rate"],
-        total_requests=data["total_requests"],
-        is_best=data["is_best"],
-        peak_rss_mb=data.get("peak_rss_mb"),
-        avg_rss_mb=data.get("avg_rss_mb"),
-        avg_cpu_pct=data.get("avg_cpu_pct"),
-        peak_cpu_pct=data.get("peak_cpu_pct"),
-        cpu_spark=data.get("cpu_spark"),
-        mem_spark=data.get("mem_spark"),
-    )
+    peak_rss_mb: float | None = None
+    avg_rss_mb: float | None = None
+    avg_cpu_pct: float | None = None
+    peak_cpu_pct: float | None = None
+    cpu_spark: str | None = None
+    mem_spark: str | None = None
+    images: str | None = None
 
 
 def _find_index(client: Tagly, key: str) -> str | None:
@@ -152,10 +114,10 @@ def _list_all_items(
 
 
 def _fetch_run(client: Tagly, runs_index_id: str, run_id: str) -> Run | None:
-    matches = client.items.list(runs_index_id, key=run_id).items
+    matches = client.items.list_with_data(runs_index_id, key=run_id).items
     if not matches:
         return None
-    return _run_from_data(client.items.get_json(runs_index_id, matches[0].id))  # pyright: ignore[reportArgumentType]
+    return msgspec.convert(matches[0].data, Run)
 
 
 def _fetch_results(client: Tagly, results_index_id: str, run_id: str) -> list[Result]:
@@ -164,10 +126,10 @@ def _fetch_results(client: Tagly, results_index_id: str, run_id: str) -> list[Re
     attempt lands as a second item rather than a 409 -- resolve that here by
     keeping only the newest (by the item's own createdAt) per
     (framework, test, attempt) group, rather than every item verbatim."""
-    items = _list_all_items(client, results_index_id, tags={"run_id": run_id})
+    items = client.items.list_with_data(results_index_id, tags={"run_id": run_id}).items
     newest: dict[tuple[str, str, int], tuple[datetime, Result]] = {}
     for item in items:
-        result = _result_from_data(client.items.get_json(results_index_id, item.id))  # pyright: ignore[reportArgumentType]
+        result = msgspec.convert(item.data, Result)
         group = (result.framework, result.test, result.attempt)
         current = newest.get(group)
         if current is None or item.created_at > current[0]:
@@ -288,84 +250,66 @@ TEST_HEADLINES: dict[str, tuple[str, str]] = {
 # frameworks that were actually part of this run.
 FRAMEWORK_FACTS: dict[str, dict[str, str]] = {
     "jero": {
-        "language": "Python 3.13",
-        "server": "granian ASGI",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
+        "language": "Python 3.14",
+        "server": "peregrine ASGI",
+        "http_client": "lothc",
+        "db_driver": "fastpg",
         "validates_body": "msgspec Struct",
         "parses_upstream": "typed (msgspec)",
         "serializer": "msgspec",
     },
     "fastapi": {
-        "language": "Python 3.13",
-        "server": "granian ASGI",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
+        "language": "Python 3.14",
+        "server": "peregrine ASGI",
+        "http_client": "lothc",
+        "db_driver": "fastpg",
         "validates_body": "pydantic",
         "parses_upstream": "typed (pydantic) + response-model re-validate",
         "serializer": "pydantic",
     },
     "litestar": {
-        "language": "Python 3.13",
-        "server": "granian ASGI",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
+        "language": "Python 3.14",
+        "server": "peregrine ASGI",
+        "http_client": "lothc",
+        "db_driver": "fastpg",
         "validates_body": "msgspec Struct",
         "parses_upstream": "typed (msgspec)",
         "serializer": "msgspec",
     },
     "blacksheep": {
-        "language": "Python 3.13",
-        "server": "granian ASGI",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
-        "validates_body": "dataclass bind",
-        "parses_upstream": "passthrough dict",
-        "serializer": "orjson",
+        "language": "Python 3.14",
+        "server": "peregrine ASGI",
+        "http_client": "lothc",
+        "db_driver": "fastpg",
+        "validates_body": "pydantic (FromJSON)",
+        "parses_upstream": "typed (pydantic)",
+        "serializer": "stdlib json (BlackSheep default)",
     },
     "robyn": {
-        "language": "Python 3.13",
+        "language": "Python 3.14",
         "server": "built-in Rust server",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
+        "http_client": "lothc",
+        "db_driver": "fastpg",
         "validates_body": "pydantic (native param)",
         "parses_upstream": "typed (pydantic)",
-        "serializer": "stdlib json / pydantic",
-    },
-    "pyronova": {
-        "language": "Python 3.13",
-        "server": "built-in Rust server (gil mode)",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
-        "validates_body": "pydantic (native model=)",
-        "parses_upstream": "typed (pydantic)",
-        "serializer": "stdlib json / pydantic",
+        "serializer": "orjson (dicts) / pydantic",
     },
     "flask": {
-        "language": "Python 3.13",
-        "server": "granian WSGI",
-        "http_client": "pyreqwest (sync)",
+        "language": "Python 3.14",
+        "server": "peregrine WSGI",
+        "http_client": "lothc (sync)",
         "db_driver": "psycopg",
         "validates_body": "pydantic",
         "parses_upstream": "typed (pydantic)",
         "serializer": "stdlib json",
     },
-    "django-ninja": {
-        "language": "Python 3.13",
-        "server": "granian ASGI",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
-        "validates_body": "pydantic (Schema)",
-        "parses_upstream": "passthrough bytes",
-        "serializer": "pydantic",
-    },
     "django-bolt": {
-        "language": "Python 3.13",
+        "language": "Python 3.14",
         "server": "built-in Rust server",
-        "http_client": "pyreqwest",
-        "db_driver": "psqlpy",
+        "http_client": "lothc",
+        "db_driver": "fastpg",
         "validates_body": "msgspec Struct",
-        "parses_upstream": "passthrough bytes",
+        "parses_upstream": "typed (msgspec) + response re-validate",
         "serializer": "msgspec",
     },
     "gin": {
@@ -577,22 +521,30 @@ def _render_methodology(frameworks: list[str]) -> str:
     return f"""## How these results were made
 
 **Isolation.** Exactly one framework container is ever alive at a time, alongside
-the shared Postgres/upstream/k6-runner infra -- brought up via `compose.base.yml`
+the shared Postgres/upstream/load-generator infra -- brought up via `compose.base.yml`
 plus that framework's own `compose.<fw>.yml`, torn down before the next framework
 starts. No two frameworks ever share a core or contend for host resources.
 
-**One worker, one core.** Every service runs exactly 1 worker (granian
+**One worker, one core.** Every service runs exactly 1 worker (peregrine
 `--workers 1`, Gin `GOMAXPROCS=1`, Bun's single JS thread, Bolt `--processes 1`),
 pinned to one dedicated CPU core via `cpuset` affinity -- not a CFS quota, which
 throttles a saturated container every 100ms scheduler period and adds
 tail-latency stalls; affinity confines all of a framework's threads (including
-GIL-releasing extensions like `msgspec`/`psqlpy`) to one core with no such stalls.
+GIL-releasing extensions like `msgspec`/`fastpg`) to one core with no such stalls.
 
 **Equal resource budgets.** DB pool and outbound-HTTP pool are capped at **64**
 connections for every framework/language.
 
-**Best of N.** Each (framework, test) pair runs multiple attempts; the
-attempt with the highest req/s is kept.
+**Load generator.** wrk (C) or oha (Rust), on two dedicated cores -- fast
+enough that the framework, not the load generator, is what saturates.
+
+**Best of N.** Each (framework, test) pair starts with an untimed 3s warm-up,
+then runs multiple attempts; the attempt with the highest req/s is kept.
+
+**Success %** is the share of requests that got the expected status. Before
+the load, a correctness pass also checks the *body* of 100 responses (key
+fields per test); if any is wrong, the whole test is reported as 0% success,
+so a fast-but-wrong response can never pass as a success.
 
 **Resource-use columns.** `memPk`/`memAv` = peak/average resident memory (MB);
 `cpuAv`/`cpuPk` = average/peak CPU as % of one core (pinned via `cpuset`, so
@@ -605,22 +557,32 @@ time series during the attempt. Only the framework's own container is measured
 
 {fact_table}
 
-**One deliberate exception to per-framework idiom:** the two Django frameworks
-reach Postgres through raw psqlpy -- the same driver the rest of the async
+**One deliberate exception to per-framework idiom:** Django Bolt
+reaches Postgres through raw fastpg -- the same driver the rest of the async
 Python fleet uses -- rather than Django's ORM, whose sync-driver-behind-an-async-facade
 design would make test 4 a measurement of Django's data layer instead of the
 framework. For the same reason, every JWT endpoint hand-decodes the bearer
-token with PyJWT rather than using each framework's own auth integration.
+token with ryjwt rather than using each framework's own auth integration.
 
 **Known, intended differences** (each framework's real idiomatic behaviour, kept
 rather than normalised away): the JSON serializer column (stdlib `json` is
-slower than msgspec/orjson/native); FastAPI additionally re-validates the
-*response* against its `response_model`; Blacksheep/Elysia/Django Ninja/Django
-Bolt return the upstream payload straight through as bytes/dict; the two Django
-frameworks return snake_case field names where the rest of the Python fleet
-returns camelCase; Spring Boot's Jackson binding coerces a numeric field given
+slower than msgspec/orjson/native); FastAPI and Django Bolt additionally
+re-validate the *response* against its declared model (both frameworks'
+default); Elysia returns the upstream payload parsed but unvalidated;
+Spring Boot's Jackson binding coerces a numeric field given
 as a JSON string rather than rejecting it like pydantic/msgspec do. These are
 visible here so a number is never mistaken for pure framework speed."""
+
+
+def _images_cell(results_by_test: dict[str, list[Result]]) -> str:
+    """Every exact ECR image tag this run's results were produced on."""
+    tags = {
+        tag
+        for results in results_by_test.values()
+        for r in results
+        for tag in (r.images or "").split()
+    }
+    return ", ".join(f"`{t}`" for t in sorted(tags)) or "-- (built on the host)"
 
 
 def _render_report(
@@ -646,12 +608,14 @@ def _render_report(
         f"| **AWS region** | {run.aws_region or '-- (not run on EC2)'} |",
         f"| **EC2 instance type** | {run.ec2_instance_type or '--'} |",
         f"| **EC2 AMI** | {f'`{run.ec2_ami_id}`' if run.ec2_ami_id else '--'} |",
-        f"| **k6 VUs** | {run.vus} |",
+        f"| **Images** | {_images_cell(results_by_test)} |",
+        f"| **Load generator** | {run.loadgen or 'k6 (pre-dates this column)'} |",
+        f"| **Connections** | {run.vus} |",
         f"| **Duration per attempt** | {run.duration} |",
         f"| **Best of** | {run.best_of} |",
         f"| **Server workers** | {run.workers} |",
-        f"| **Python server** | {run.python_server} |",
-        f"| **Event loop** | {run.loop or 'uvloop (default, pre-dates this column)'} |",
+        f"| **Python server** | {run.python_server or 'peregrine'} |",
+        f"| **Event loop** | {run.loop or 'uvloop'} |",
         f"| **Frameworks** | {', '.join(frameworks)} |",
         f"| **Results backend** | {destination} |",
         "",
@@ -697,6 +661,7 @@ def _run_to_dict(run: Run) -> dict[str, object]:
         "best_of": run.best_of,
         "workers": run.workers,
         "python_server": run.python_server,
+        "loadgen": run.loadgen,
         "ec2_ami_id": run.ec2_ami_id,
         "ec2_instance_type": run.ec2_instance_type,
         "aws_region": run.aws_region,
@@ -723,6 +688,7 @@ def _result_to_dict(r: Result) -> dict[str, object]:
         "peak_cpu_pct": r.peak_cpu_pct,
         "cpu_spark": r.cpu_spark,
         "mem_spark": r.mem_spark,
+        "images": r.images,
     }
 
 
@@ -831,7 +797,8 @@ def main(run_id: str = "") -> None:
 
         print(
             f"jero-benchmarks · run {run.run_id} · host {run.hostname or 'unknown'} · "
-            f"py:{run.python_server}/{run.loop or 'uvloop'} · {run.vus} VUs · "
+            f"py:{run.python_server or 'peregrine'}/{run.loop or 'uvloop'} · "
+            f"{run.loadgen or 'k6'} · {run.vus} connections · "
             f"{run.duration}/test · best-of-{run.best_of} · {run.workers} worker(s) · "
             f"results -> {destination}"
         )

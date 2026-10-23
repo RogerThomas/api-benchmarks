@@ -30,10 +30,12 @@ services:
       postgres: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "bun", "-e", "fetch('http://localhost:8000/info').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 2s
+      # Probe every 1s until healthy, then only hourly: a probe mid-bench would
+      # run on the measured core (and costs more for some images than others).
+      start_period: 120s
+      start_interval: 1s
+      interval: 1h
       timeout: 3s
-      retries: 40
-      start_period: 2s
     networks: [bench]
 
   runner:

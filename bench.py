@@ -41,8 +41,7 @@ class ResultsBackendSettings(BaseSettings):
     taglydb_api_key: str
 
 
-type PythonServer = Literal["granian", "uvicorn"]
-type EventLoop = Literal["uvloop", "asyncio"]
+type LoadGen = Literal["oha", "wrk"]
 type Framework = Literal[
     "jero",
     "fastapi",
@@ -50,17 +49,33 @@ type Framework = Literal[
     "flask",
     "blacksheep",
     "robyn",
-    "pyronova",
     "gin",
     "elysia",
     "spring-boot",
-    "django-ninja",
     "django-bolt",
 ]
 
-# Frameworks that actually route through serve.sh and respect PYTHON_SERVER --
-# Flask is granian-only (WSGI), Robyn/Pyronova/Django Bolt ship their own server.
-ASGI_FRAMEWORKS = {"jero", "fastapi", "litestar", "blacksheep", "django-ninja"}
+
+def build_images(base_file: Path, fw_files: list[Path], env: dict[str, str]) -> None:
+    """Build every image this run needs in one go, before benching anything.
+
+    Compose hands the merged project to bake, which builds all targets in
+    parallel (sharing the Python `base` stage) instead of one per framework
+    just ahead of its bench — and a broken image aborts the run here rather
+    than after every framework ahead of it has already been benched.
+    """
+    print(f"\n==> building images for {len(fw_files)} framework(s)")
+    args = ["compose", "-f", str(base_file)]
+    for f in fw_files:
+        args += ["-f", str(f)]
+    rc, _, _ = (
+        local["docker"][(*args, "build")]
+        .with_env(**env)
+        .run(retcode=None, stdout=None, stderr=None)
+    )
+    if rc != 0:
+        print(f"==> image build FAILED (exit {rc}) — nothing benched", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def main(
@@ -69,24 +84,11 @@ def main(
         get_args(Framework.__value__)
     ),
     tests: Annotated[str, Opt(help="Space-separated test names")] = "test1 test2 test3 test4",
-    duration: Annotated[str, Opt(help="k6 duration per attempt")] = "10s",
-    vus: Annotated[int, Opt(help="k6 virtual users")] = 100,
+    duration: Annotated[str, Opt(help="Duration per attempt")] = "10s",
+    vus: Annotated[int, Opt(help="Concurrent connections (closed loop)")] = 100,
     runs: Annotated[int, Opt(help="Attempts per (framework, test); best wins")] = 3,
     workers: Annotated[int, Opt(help="Server workers/processes per framework")] = 1,
-    python_server: Annotated[PythonServer, Opt(help="ASGI server")] = "granian",
-    python_servers: Annotated[
-        str,
-        Opt(
-            help=(
-                'Space-separated ASGI servers to sweep per framework, e.g. "granian uvicorn" '
-                '-- overrides --python-server, tags each result as "<framework>-<server>" so '
-                "they show up as distinct rows in one report"
-            )
-        ),
-    ] = "",
-    loop: Annotated[
-        EventLoop, Opt(help="Event loop (Robyn/Pyronova/Django Bolt ignore this, own server)")
-    ] = "uvloop",
+    loadgen: Annotated[LoadGen, Opt(help="Load generator")] = "wrk",
     run_id: Annotated[
         str,
         Opt(help="Reuse an existing RUN_ID (e.g. to backfill a framework into a past run)"),
@@ -98,6 +100,12 @@ def main(
         str, Opt(help="EC2 instance type this ran on (informational)")
     ] = "",
     aws_region: Annotated[str, Opt(help="AWS region this ran in (informational)")] = "",
+    images: Annotated[
+        str, Opt(help="Exact ECR image tags this ran on (informational, set by ec2_launch.py)")
+    ] = "",
+    no_build: Annotated[
+        bool, Opt(help="Use the images already present (e.g. pulled from ECR) instead of building")
+    ] = False,
 ) -> None:
     fw_list = frameworks.split()
     unknown = [fw for fw in fw_list if fw not in get_args(Framework.__value__)]
@@ -125,53 +133,40 @@ def main(
         "VUS": str(vus),
         "RUNS": str(runs),
         "WORKERS": str(workers),
-        "LOOP": loop,
+        "LOADGEN": loadgen,
         "BENCH_HOSTNAME": socket.gethostname(),
         "EC2_AMI_ID": ec2_ami_id,
         "EC2_INSTANCE_TYPE": ec2_instance_type,
         "AWS_REGION": aws_region,
+        "IMAGES": images,
         "TAGLYDB_API_KEY": backend.taglydb_api_key,
     }
 
-    # Normally one (framework, server) pair per framework. When --python-servers
-    # names more than one server, every ASGI-capable framework is run once per
-    # server in that list, each tagged "<framework>-<server>" so they land as
-    # distinct rows in the same report (see loadtest/run.py's RESULT_LABEL).
-    servers_list = python_servers.split() if python_servers else [python_server]
-    work_items: list[tuple[str, str, str]] = []
-    for fw in fw_list:
-        if fw in ASGI_FRAMEWORKS and len(servers_list) > 1:
-            work_items += [(fw, server, f"{fw}-{server}") for server in servers_list]
-        else:
-            work_items.append((fw, servers_list[0], ""))
-
-    print(
-        f"==> run {run_id} · {len(work_items)} item(s): "
-        f"{' '.join(label or fw for fw, _, label in work_items)}"
-    )
+    print(f"==> run {run_id} · {len(fw_list)} framework(s): {' '.join(fw_list)}")
     root = Path(__file__).resolve().parent
     base_file = root / "compose.base.yml"
+    fw_files = [root / f"compose.{fw}.yml" for fw in fw_list]
+    if not no_build:
+        build_images(base_file, [f for f in fw_files if f.exists()], env)
+
     failures = []
-    for fw, server, label in work_items:
-        display = label or fw
-        fw_file = root / f"compose.{fw}.yml"
+    for fw, fw_file in zip(fw_list, fw_files, strict=True):
         if not fw_file.exists():
-            print(f"==> skipping {display}: no {fw_file.name}", file=sys.stderr)
-            failures.append(display)
+            print(f"==> skipping {fw}: no {fw_file.name}", file=sys.stderr)
+            failures.append(fw)
             continue
 
-        print(f"\n==> {display}: base + {fw} (python_server={server})")
-        combo_env = {**env, "PYTHON_SERVER": server, "RESULT_LABEL": label}
+        print(f"\n==> {fw}: base + {fw_file.name}")
         compose = local["docker"]["compose", "-f", str(base_file), "-f", str(fw_file)].with_env(
-            **combo_env
+            **env
         )
         try:
             up_rc, _, _ = compose[
-                "up", "--build", "--abort-on-container-exit", "--exit-code-from", "runner"
+                "up", "--no-build", "--abort-on-container-exit", "--exit-code-from", "runner"
             ].run(retcode=None, stdout=None, stderr=None)
             if up_rc != 0:
-                print(f"==> {display}: FAILED (exit {up_rc})", file=sys.stderr)
-                failures.append(display)
+                print(f"==> {fw}: FAILED (exit {up_rc})", file=sys.stderr)
+                failures.append(fw)
         finally:
             compose["down", "-v"].run(retcode=None)
 

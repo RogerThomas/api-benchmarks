@@ -2,21 +2,22 @@
 
 Robyn ships its own Rust server; run with: python robyn_app.py --processes 1 --workers 1
 
-Settings, the pyreqwest client and the psqlpy pool are provided through Robyn's
-global dependency injection (``app.inject_global``) rather than module-level
-globals; handlers receive them via the ``global_dependencies`` argument.
+Settings are provided through Robyn's global dependency injection
+(``app.inject_global``); handlers receive them via the ``global_dependencies``
+argument. The lothc client and the fastpg pool are the exceptions: both are
+opened on the loop that serves requests, so they're built lazily on first use.
 """
 
-import json as jsonlib
+import asyncio
 import os
 import uuid
 from typing import Literal
 
-import jwt
-import psqlpy
+import fastpg
+import ryjwt
+from lothc import HTTPClient
 from pydantic import BaseModel
-from pyreqwest.client import Client, ClientBuilder
-from robyn import Request, Response, Robyn
+from robyn import Request, Response, Robyn, jsonify
 from settings import Settings
 
 _GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
@@ -24,7 +25,7 @@ _JSON = {"Content-Type": "application/json"}
 
 
 # Robyn has first-class Pydantic support: a handler param annotated with a model
-# validates the request body natively, and returning a model serialises it (orjson).
+# validates the request body natively, and returning a model serialises it.
 class MovieIn(BaseModel):
     title: str
     year: int
@@ -62,6 +63,11 @@ class Product(BaseModel):
     vendor: Vendor
 
 
+class Claims(BaseModel):
+    sub: str
+    name: str
+
+
 class Profile(BaseModel):
     id: str
     name: str
@@ -73,39 +79,22 @@ class Profile(BaseModel):
 
 def build_dependencies() -> dict:
     """Build the shared resources Robyn injects into every route."""
-    settings = Settings()
-    return {
-        "settings": settings,
-        "client": (
-            ClientBuilder()
-            .base_url(settings.upstream_url)
-            .default_headers({"authorization": f"Bearer {settings.upstream_api_key}"})
-            .build()
-        ),
-        "pool": psqlpy.ConnectionPool(
-            username=settings.db_user,
-            password=settings.db_password,
-            host=settings.db_host,
-            port=settings.db_port,
-            db_name=settings.db_name,
-            max_db_pool_size=settings.db_pool_size,
-        ),
-    }
+    return {"settings": Settings()}
 
 
 app = Robyn(__file__)
 app.inject_global(**build_dependencies())
 
 
-def authenticate(request: Request, secret: str) -> dict | None:
+def authenticate(request: Request, key: ryjwt.SecretKey) -> dict | None:
     """Decode the bearer JWT; return the user dict, or None if it's invalid."""
     authorization = request.headers.get("authorization") or ""
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
-    except jwt.PyJWTError:
+        claims = key.decode(token, into=Claims)
+    except ryjwt.InvalidTokenError:  # includes a token missing sub/name
         return None
-    return {"id": payload["sub"], "name": payload["name"]}
+    return {"id": claims.sub, "name": claims.name}
 
 
 # --- Test 1: GET /info -------------------------------------------------------
@@ -124,7 +113,7 @@ def get_info(request: Request) -> Response:
         "nested": {"level": 2, "label": "nested"},
     }
     headers = {**_JSON, "x-response-id": str(uuid.uuid4())}
-    return Response(status_code=200, headers=headers, description=jsonlib.dumps(body))
+    return Response(status_code=200, headers=headers, description=jsonify(body))
 
 
 # --- Test 2: POST /movies (JWT-authenticated) --------------------------------
@@ -133,12 +122,12 @@ def get_info(request: Request) -> Response:
 @app.post("/movies")
 def create_movie(request: Request, global_dependencies, movie: MovieIn) -> Response:
     # `movie: MovieIn` is validated natively by Robyn from the request body.
-    user = authenticate(request, global_dependencies["settings"].jwt_secret)
+    user = authenticate(request, global_dependencies["settings"].jwt_key)
     if user is None:
         return Response(
             status_code=401,
             headers=_JSON,
-            description=jsonlib.dumps({"error": "invalid token"}),
+            description=jsonify({"error": "invalid token"}),
         )
     result = Movie(id=str(uuid.uuid4()), user=User(**user), **movie.model_dump())
     return Response(status_code=201, headers=_JSON, description=result.model_dump_json())
@@ -147,43 +136,67 @@ def create_movie(request: Request, global_dependencies, movie: MovieIn) -> Respo
 # --- Test 3: GET /catalog (proxy an authenticated upstream) ------------------
 
 
+# A lothc client must be entered (`async with`) before use; do that lazily on
+# the first request (the serving loop), like the fastpg pool below.
+_client: HTTPClient | None = None
+_client_lock = asyncio.Lock()
+
+
+async def _get_client(settings: Settings) -> HTTPClient:
+    global _client
+    if _client is None:
+        async with _client_lock:
+            if _client is None:
+                _client = await HTTPClient(**settings.upstream_client_options).__aenter__()
+    return _client
+
+
 @app.get("/catalog")
 async def catalog(request: Request, global_dependencies) -> Product:
-    client: Client = global_dependencies["client"]
-    # Auth rides on the client's default headers (set once at build time).
-    resp = await client.get("/data").build().send()
-    # Validate the upstream payload into a model; returning it serialises natively.
-    # bytes(): pydantic wants str/bytes/bytearray — it rejects pyreqwest's buffer.
-    return Product.model_validate_json(bytes(await resp.bytes()))
+    client = await _get_client(global_dependencies["settings"])
+    # Auth rides on the client's bearer_token (set once at build time); lothc
+    # validates the upstream payload into the model, which serialises natively.
+    resp = await client.get("data", into=Product)
+    return resp.data
 
 
 # --- Test 4: GET /users/me (Postgres) ----------------------------------------
+
+# fastpg runs on the asyncio loop that created the pool, so build it lazily on
+# the first request (the serving loop), not in build_dependencies().
+_db_pool: fastpg.Pool | None = None
+_db_pool_lock = asyncio.Lock()
+
+
+async def _get_db_pool(settings: Settings) -> fastpg.Pool:
+    global _db_pool
+    if _db_pool is None:
+        async with _db_pool_lock:
+            if _db_pool is None:
+                _db_pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
+    return _db_pool
 
 
 @app.get("/users/me")
 async def users_me(request: Request, global_dependencies) -> Response:
     settings: Settings = global_dependencies["settings"]
-    pool: psqlpy.ConnectionPool = global_dependencies["pool"]
-    user = authenticate(request, settings.jwt_secret)
+    user = authenticate(request, settings.jwt_key)
     if user is None:
         return Response(
             status_code=401,
             headers=_JSON,
-            description=jsonlib.dumps({"error": "invalid token"}),
+            description=jsonify({"error": "invalid token"}),
         )
-    async with pool.acquire() as connection:
-        result = await connection.execute(_GET_USER_SQL, [user["id"]])
-    rows = result.result(as_tuple=True)
-    if not rows:
+    pool = await _get_db_pool(settings)
+    try:
+        profile = await pool.select_one(_GET_USER_SQL, user["id"], into=Profile)
+    except fastpg.NoRowsError:
         return Response(
             status_code=404,
             headers=_JSON,
-            description=jsonlib.dumps({"error": "user not found"}),
+            description=jsonify({"error": "user not found"}),
         )
-    row = rows[0]
-    return Profile(
-        id=row[0], name=row[1], email=row[2], address=row[3], city=row[4], country=row[5]
-    )
+    return profile
 
 
 if __name__ == "__main__":
