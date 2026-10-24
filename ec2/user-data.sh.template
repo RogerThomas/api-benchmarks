@@ -1,16 +1,15 @@
 #!/bin/bash
-# Fire-and-forget EC2 runner: pulls the code from S3 and the prebuilt images
-# from ECR, writes a fresh .env (TaglyDB results-backend key only -- AWS auth
-# comes from the instance's IAM profile, never from here), runs `task bench`,
-# uploads the log to S3, then self-terminates. Rendered from this template by
+# Fire-and-forget EC2 runner: downloads the launch commit from GitHub and the
+# prebuilt images from ECR, writes a fresh .env (TaglyDB results-backend key
+# only -- AWS auth comes from the instance's IAM profile, never from here), runs
+# bench.py, uploads the log to S3, then self-terminates. Rendered from this template by
 # ec2_launch.py, which replaces every __TOKEN__ below with a real value --
 # never edit those in place, they're plain string substitutions, not bash
 # variables.
 set -euo pipefail
 
 # cloud-init runs this as root, whose PATH doesn't include ec2-user's
-# per-user `uv` install (/usr/local/bin/task is already system-wide and
-# root-visible, but `task bench` internally shells out to `uv`).
+# per-user `uv` install.
 export PATH="/home/ec2-user/.local/bin:$PATH"
 
 TOKEN=$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")
@@ -25,10 +24,12 @@ finish() {
 trap finish EXIT
 exec > >(tee -a /var/log/jero-bench.log) 2>&1
 
-cd /home/ec2-user
-aws s3 cp "s3://__S3_BUCKET__/code/jero-benchmarks.tar.gz" .
-tar xzf jero-benchmarks.tar.gz
-cd jero-benchmarks
+# The exact commit ec2_launch.py checked was pushed (public repo, no token).
+# The directory name sets compose's project name, so the images keep their
+# jero-benchmarks-<service> names.
+mkdir -p /home/ec2-user/jero-benchmarks
+cd /home/ec2-user/jero-benchmarks
+curl -fsSL "https://codeload.github.com/__GITHUB_REPO__/tar.gz/__COMMIT__" | tar xz --strip-components=1
 
 cat > .env <<ENVEOF
 TAGLYDB_API_KEY=__TAGLYDB_API_KEY__
@@ -40,11 +41,17 @@ ENVEOF
 # __IMAGES__ is "service=version" pairs, e.g. "jero=2026.10.23.01 runner=...".
 REPO="__ECR_REPO__"
 aws ecr get-login-password --region __AWS_REGION__ | docker login --username AWS --password-stdin "${REPO%%/*}"
+# All pulls at once; `wait` on each so any failed pull still fails the script.
+pids=""
 for pair in __IMAGES__; do
   svc="${pair%%=*}"
   ref="$REPO:$svc-${pair#*=}"
-  docker pull -q "$ref"
-  if [ "$svc" = postgres ]; then docker tag "$ref" postgres:18-alpine; else docker tag "$ref" "jero-benchmarks-$svc"; fi
+  local_name="jero-benchmarks-$svc"
+  if [ "$svc" = postgres ]; then local_name=postgres:18-alpine; fi
+  (docker pull -q "$ref" && docker tag "$ref" "$local_name") &
+  pids="$pids $!"
 done
+for pid in $pids; do wait "$pid"; done
 
-task bench -- __BENCH_ARGS__ --no-build
+# --no-dev: bench.py needs no linters; --no-export: the report is built locally.
+uv run --no-dev yeet ./bench.py __BENCH_ARGS__ --no-build --no-export

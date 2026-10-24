@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent
 
 _RUNS_INDEX_KEY = "runs"
 _RESULTS_INDEX_KEY = "results"
+_REPO_URL = "https://github.com/RogerThomas/api-benchmarks"
 
 
 class Settings(BaseSettings):
@@ -93,6 +94,7 @@ class Result:
     cpu_spark: str | None = None
     mem_spark: str | None = None
     images: str | None = None
+    commit: str | None = None
 
 
 def _find_index(client: Tagly, key: str) -> str | None:
@@ -585,6 +587,18 @@ def _images_cell(results_by_test: dict[str, list[Result]]) -> str:
     return ", ".join(f"`{t}`" for t in sorted(tags)) or "-- (built on the host)"
 
 
+def _commit_cell(results_by_test: dict[str, list[Result]]) -> str:
+    """The git commit(s) this run's results came from, linked when pushed."""
+    commits = {r.commit for results in results_by_test.values() for r in results if r.commit}
+    return (
+        ", ".join(
+            f"`{c}`" if c.endswith("-dirty") else f"[`{c[:12]}`]({_REPO_URL}/commit/{c})"
+            for c in sorted(commits)
+        )
+        or "-- (not recorded)"
+    )
+
+
 def _render_report(
     run: Run,
     tests: list[str],
@@ -608,6 +622,7 @@ def _render_report(
         f"| **AWS region** | {run.aws_region or '-- (not run on EC2)'} |",
         f"| **EC2 instance type** | {run.ec2_instance_type or '--'} |",
         f"| **EC2 AMI** | {f'`{run.ec2_ami_id}`' if run.ec2_ami_id else '--'} |",
+        f"| **Commit** | {_commit_cell(results_by_test)} |",
         f"| **Images** | {_images_cell(results_by_test)} |",
         f"| **Load generator** | {run.loadgen or 'k6 (pre-dates this column)'} |",
         f"| **Connections** | {run.vus} |",
@@ -689,6 +704,7 @@ def _result_to_dict(r: Result) -> dict[str, object]:
         "cpu_spark": r.cpu_spark,
         "mem_spark": r.mem_spark,
         "images": r.images,
+        "commit": r.commit,
     }
 
 

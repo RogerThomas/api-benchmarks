@@ -65,6 +65,7 @@ class Settings(BaseSettings):
     ec2_instance_type: str | None = None
     aws_region: str | None = None
     images: str | None = None  # exact ECR tags, e.g. "jero-2026.10.23.01 runner-..."
+    commit: str | None = None  # git sha the run's code came from ("-dirty" if uncommitted)
 
     taglydb_api_key: str
 
@@ -495,6 +496,7 @@ def _insert_results(client: Tagly, results_index_id: str, test: str, attempts: l
             "cpu_spark": a.get("cpu_spark"),
             "mem_spark": a.get("mem_spark"),
             "images": settings.images,
+            "commit": settings.commit,
         }
         tags = {
             "run_id": settings.run_id,

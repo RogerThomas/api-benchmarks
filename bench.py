@@ -78,6 +78,17 @@ def build_images(base_file: Path, fw_files: list[Path], env: dict[str, str]) -> 
         raise SystemExit(1)
 
 
+def _git_commit(root: Path) -> str:
+    """HEAD's sha, with "-dirty" if the working tree has uncommitted changes
+    (images built from it then match no commit); "" outside a git checkout."""
+    git = local["git"]["-C", str(root)]
+    rc, sha, _ = git["rev-parse", "HEAD"].run(retcode=None)
+    if rc != 0:
+        return ""
+    dirty = git["status", "--porcelain"]().strip()
+    return sha.strip() + ("-dirty" if dirty else "")
+
+
 def main(
     *,
     frameworks: Annotated[str, Opt(help="Space-separated framework names")] = " ".join(
@@ -103,8 +114,14 @@ def main(
     images: Annotated[
         str, Opt(help="Exact ECR image tags this ran on (informational, set by ec2_launch.py)")
     ] = "",
+    commit: Annotated[
+        str, Opt(help="Git commit this ran from (set by ec2_launch.py; default: the local HEAD)")
+    ] = "",
     no_build: Annotated[
         bool, Opt(help="Use the images already present (e.g. pulled from ECR) instead of building")
+    ] = False,
+    no_export: Annotated[
+        bool, Opt(help="Skip printing the report at the end (EC2 runs; export locally instead)")
     ] = False,
 ) -> None:
     fw_list = frameworks.split()
@@ -119,6 +136,7 @@ def main(
 
     now = datetime.now(UTC)
     run_id = run_id or now.strftime("%Y%m%dT%H%M%S")
+    root = Path(__file__).resolve().parent
     backend = ResultsBackendSettings()  # pyright: ignore[reportCallIssue] -- fields come from .env, not the constructor
     env = {
         **os.environ,
@@ -139,11 +157,11 @@ def main(
         "EC2_INSTANCE_TYPE": ec2_instance_type,
         "AWS_REGION": aws_region,
         "IMAGES": images,
+        "COMMIT": commit or _git_commit(root),
         "TAGLYDB_API_KEY": backend.taglydb_api_key,
     }
 
     print(f"==> run {run_id} · {len(fw_list)} framework(s): {' '.join(fw_list)}")
-    root = Path(__file__).resolve().parent
     base_file = root / "compose.base.yml"
     fw_files = [root / f"compose.{fw}.yml" for fw in fw_list]
     if not no_build:
@@ -170,10 +188,11 @@ def main(
         finally:
             compose["down", "-v"].run(retcode=None)
 
-    print(f"\n==> exporting results for run {run_id}")
-    local["uv"]["run", "yeet", str(root / "export_results.py"), run_id].run(
-        retcode=None, stdout=None, stderr=None, cwd=str(root)
-    )
+    if not no_export:
+        print(f"\n==> exporting results for run {run_id}")
+        local["uv"]["run", "yeet", str(root / "export_results.py"), run_id].run(
+            retcode=None, stdout=None, stderr=None, cwd=str(root)
+        )
 
     if failures:
         print(f"\n==> run {run_id} had failures: {' '.join(failures)}", file=sys.stderr)

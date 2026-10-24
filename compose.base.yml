@@ -86,6 +86,7 @@ services:
       EC2_INSTANCE_TYPE: ${EC2_INSTANCE_TYPE:-}
       AWS_REGION: ${AWS_REGION:-}
       IMAGES: ${IMAGES:-}
+      COMMIT: ${COMMIT:-}
       # Results backend: TaglyDB. bench.py reads this from .env and
       # forwards it here — see loadtest/run.py's Tagly.build() call
       # (base URL is inlined there, not env-configurable).

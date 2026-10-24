@@ -1,7 +1,7 @@
 #!yeet
 """Launch a fire-and-forget EC2 benchmark run: a c9g.2xlarge in eu-central-1,
 built from the pre-warmed AMI (see the ec2-fire-and-forget-setup memory),
-runs `task bench`, uploads results to TaglyDB and its log to S3, then
+runs bench.py, uploads results to TaglyDB and its log to S3, then
 self-terminates. No SSH babysitting needed -- ./ec2_tail_logs.py watches it
 live, ./export_results.py reads the results back out once it's done.
 
@@ -11,6 +11,10 @@ CalVer-style: `<service>-YYYY.MM.DD.NN`, e.g. `jero-2026.10.23.01` (NN counts
 up within the UTC day). A build only pushes a new version of an image that
 actually changed -- edit jero and only jero gets a new tag. Tags are immutable,
 and every result records the exact image tags it ran on.
+
+The code comes from GitHub, not from this machine: each instance downloads the
+tarball of the current commit, so the working tree must be clean (the images
+are built from it) and HEAD pushed. Every result records that commit.
 
     uv run yeet ./ec2_launch.py                       # everything, one instance
     uv run yeet ./ec2_launch.py --parallel            # one instance per framework
@@ -52,52 +56,27 @@ class EC2Settings(BaseSettings):
     ec2_security_group_id: str = "sg-03642d1f5a22358d3"
     ec2_subnet_id: str = "subnet-07e2c8dbae2268429"
     ec2_iam_instance_profile: str = "jero-benchmarks-ec2-profile"
-    ec2_s3_bucket: str = "jero-benchmarks-751884348953"
-    ec2_s3_bucket_region: str = "eu-west-2"
+    ec2_s3_bucket: str = "jero-benchmarks-751884348953"  # logs only
     ec2_ecr_repo: str = "751884348953.dkr.ecr.eu-central-1.amazonaws.com/jero-benchmarks"
+
+    github_repo: str = "RogerThomas/api-benchmarks"  # public: no token needed
 
     taglydb_api_key: str | None = None
     upstream_api_key: str = "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
 
 
-def _sync_code(settings: EC2Settings) -> None:
-    """Tar up the current working tree (not `git archive` -- uncommitted
-    edits must ship too) and push it to S3, so every launch runs whatever's
-    on disk right now instead of a stale, manually-uploaded tarball."""
-    repo_root = Path(__file__).resolve().parent
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tarball_file:
-        tarball_path = Path(tarball_file.name)
-    try:
-        _ = (
-            local["tar"][
-                "czf",
-                str(tarball_path),
-                "--exclude=.git",
-                "--exclude=.env",
-                "--exclude=.venv",
-                "--exclude=__pycache__",
-                "--exclude=target",
-                "--exclude=node_modules",
-                "--exclude=results",
-                "-C",
-                str(repo_root.parent),
-                repo_root.name,
-            ]
-            & FG
-        )
-        _ = (
-            local["aws"][
-                "s3",
-                "cp",
-                str(tarball_path),
-                f"s3://{settings.ec2_s3_bucket}/code/jero-benchmarks.tar.gz",
-                "--region",
-                settings.ec2_s3_bucket_region,
-            ]
-            & FG
-        )
-    finally:
-        tarball_path.unlink(missing_ok=True)
+def _pushed_commit() -> str:
+    """HEAD's sha, after checking instances can fetch exactly the code the
+    images are about to be built from: no uncommitted changes, HEAD pushed."""
+    git = local["git"]["-C", str(Path(__file__).resolve().parent)]
+    if git["status", "--porcelain"]().strip():
+        print("uncommitted changes -- commit and push first, instances run HEAD", file=sys.stderr)
+        raise SystemExit(1)
+    _ = git["fetch", "-q", "origin"]()
+    if not git["branch", "-r", "--contains", "HEAD"]().strip():
+        print("HEAD isn't pushed -- push first, instances download it from GitHub", file=sys.stderr)
+        raise SystemExit(1)
+    return git["rev-parse", "HEAD"]().strip()
 
 
 # Harness images every instance needs alongside its framework(s).
@@ -227,12 +206,16 @@ def _existing(settings: EC2Settings, frameworks: list[str], tag: str) -> dict[st
     return chosen
 
 
-def _render_user_data(settings: EC2Settings, *, bench_args: str, images: dict[str, str]) -> str:
+def _render_user_data(
+    settings: EC2Settings, *, commit: str, bench_args: str, images: dict[str, str]
+) -> str:
     template_path = Path(__file__).resolve().parent / "ec2" / "user-data.sh.template"
     template = template_path.read_text()
     return (
         template
         .replace("__S3_BUCKET__", settings.ec2_s3_bucket)
+        .replace("__GITHUB_REPO__", settings.github_repo)
+        .replace("__COMMIT__", commit)
         .replace("__TAGLYDB_API_KEY__", settings.taglydb_api_key or "")
         .replace("__UPSTREAM_API_KEY__", settings.upstream_api_key)
         .replace("__BENCH_ARGS__", bench_args)
@@ -246,6 +229,7 @@ def _launch(
     settings: EC2Settings,
     *,
     run_id: str,
+    commit: str,
     bench_args: str,
     frameworks: list[str],
     versions: dict[str, str],
@@ -255,6 +239,7 @@ def _launch(
     tags = " ".join(f"{svc}-{ver}" for svc, ver in images.items())
     user_data = _render_user_data(
         settings,
+        commit=commit,
         bench_args=f'{bench_args} --frameworks "{" ".join(frameworks)}" --images "{tags}"',
         images=images,
     )
@@ -337,6 +322,7 @@ def _launch_when_free(
     settings: EC2Settings,
     *,
     run_id: str,
+    commit: str,
     bench_args: str,
     frameworks: list[str],
     versions: dict[str, str],
@@ -352,6 +338,7 @@ def _launch_when_free(
             return _launch(
                 settings,
                 run_id=run_id,
+                commit=commit,
                 bench_args=bench_args,
                 frameworks=frameworks,
                 versions=versions,
@@ -393,10 +380,11 @@ def main(
         )
         raise SystemExit(1)
 
+    commit = _pushed_commit()
     fw_list = frameworks.split() or list(get_args(Framework.__value__))
     run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     bench_args = (
-        f"--duration {duration} --vus {vus} --runs {runs} --run-id {run_id} "
+        f"--duration {duration} --vus {vus} --runs {runs} --run-id {run_id} --commit {commit} "
         f"--loadgen {loadgen} "
         f"--ec2-ami-id {settings.ec2_ami_id} --ec2-instance-type {settings.ec2_instance_type} "
         f"--aws-region {settings.aws_region}"
@@ -409,8 +397,7 @@ def main(
     else:
         print(f"==> building, pushing changed images to {settings.ec2_ecr_repo}")
         versions = _push_changed(settings, fw_list)
-    print(f"==> syncing code to s3://{settings.ec2_s3_bucket}/code/jero-benchmarks.tar.gz")
-    _sync_code(settings)
+    print(f"==> instances run commit {commit[:12]} from github.com/{settings.github_repo}")
 
     groups = [[fw] for fw in fw_list] if parallel else [fw_list]
     not_launched: list[str] = []
@@ -418,6 +405,7 @@ def main(
         instance_id = _launch_when_free(
             settings,
             run_id=run_id,
+            commit=commit,
             bench_args=bench_args,
             frameworks=group,
             versions=versions,
