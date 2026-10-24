@@ -88,7 +88,9 @@ report (markdown, chart, raw JSON) to `reports/<run-id>/`; see
 All apps use idiomatic, framework-recommended code (no deep optimisations). The Python
 ASGI frameworks and Flask share peregrine as the server so the variable under test is the
 *framework*, not the server (Robyn and Django Bolt ship their own servers and
-aren't run under peregrine). Python ASGI apps run on uvloop. Django Bolt queries
+aren't run under peregrine). peregrine was chosen on evidence: on identical images it beat
+granian on every test, for jero (1.12–2.06×), FastAPI (1.04–1.59×) and Flask (1.31–1.43×);
+see `reports/20261023T135721/`. Python ASGI apps run on uvloop. Django Bolt queries
 the shared `users` table with raw fastpg — the same driver every other async framework in
 this fleet uses — rather than Django's ORM or a different raw driver; either would be
 doing different work than everyone else rather than a fair idiomatic difference. (Django
