@@ -8,6 +8,10 @@ the env into the server's own command line, then execs it.
 Env: WORKERS (default 1). peregrine runs ASGI apps on uvloop (it's installed,
 and peregrine uses it whenever it's importable). Request/access logging stays
 off for every server.
+
+Temporary, for the peregrine-vs-granian A/B: SERVER=granian runs the same app
+under granian instead (`--loop uvloop` for ASGI; WSGI pinned to one blocking
+thread, as the pre-peregrine harness ran it).
 """
 
 import os
@@ -16,6 +20,11 @@ import sys
 workers = os.environ.get("WORKERS", "1")
 
 match sys.argv[1:]:
+    case ["peregrine", app] if os.environ.get("SERVER") == "granian":
+        wsgi = app.startswith("flask_app")
+        argv = ["granian", "--interface", "wsgi" if wsgi else "asgi"]
+        argv += ["--blocking-threads", "1"] if wsgi else ["--loop", "uvloop"]
+        argv += ["--host", "0.0.0.0", "--port", "8000", "--workers", workers, app]
     case ["peregrine", app]:
         argv = ["peregrine", "--host", "0.0.0.0", "--port", "8000"]
         argv += ["--workers", workers, app]

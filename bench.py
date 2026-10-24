@@ -53,6 +53,10 @@ type Framework = Literal[
     "elysia",
     "spring-boot",
     "django-bolt",
+    # Temporary: the peregrine-vs-granian A/B (compose.<fw>-granian.yml).
+    "jero-granian",
+    "fastapi-granian",
+    "flask-granian",
 ]
 
 

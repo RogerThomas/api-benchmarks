@@ -21,6 +21,7 @@ robyn = { url = "https://github.com/sparckles/Robyn/archive/refs/tags/v0.88.0.ta
 [dependency-groups]
 jero = [
     "peregrine-server[uvloop]",
+    "granian",  # temporary: peregrine vs granian A/B (SERVER=granian)
     "ryjwt[msgspec]",
     "lothc[msgspec]",
     "fastpg",
@@ -30,6 +31,7 @@ jero = [
 fastapi = [
     "fastapi",
     "peregrine-server[uvloop]",
+    "granian",  # temporary: peregrine vs granian A/B (SERVER=granian)
     "ryjwt",
     "lothc[pydantic]",
     "fastpg[pydantic]",
@@ -46,6 +48,7 @@ litestar = [
 flask = [
     "flask",
     "peregrine-server",
+    "granian",  # temporary: peregrine vs granian A/B (SERVER=granian)
     "ryjwt",
     "lothc[pydantic]",
     "psycopg[binary,pool]",
