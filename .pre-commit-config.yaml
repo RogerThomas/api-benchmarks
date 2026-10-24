@@ -1,0 +1,12 @@
+# Install once with: uv run --group dev pre-commit install
+repos:
+  - repo: local
+    hooks:
+      # Every module-level name must be defined above where it's used (no
+      # off-the-shelf ruff/pylint/pyright rule enforces this).
+      - id: definition-order
+        name: definition order
+        entry: uv run yeet ./check_definition_order.py
+        language: system
+        types: [python]
+        exclude: ^vendor/

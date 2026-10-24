@@ -75,9 +75,14 @@ tasks:
     desc: Type-check all Python code with pyright.
     cmd: uv run --group dev pyright
 
+  check-definition-order:
+    desc: Fail if any module-level name is used above its definition (all tracked Python files).
+    cmd: uv run yeet ./check_definition_order.py $(git ls-files '*.py' ':!:vendor/**')
+
   check:
-    desc: format + lint + typecheck, in that order.
+    desc: format + lint + typecheck + definition order, in that order.
     cmds:
       - task: format
       - task: lint
       - task: typecheck
+      - task: check-definition-order

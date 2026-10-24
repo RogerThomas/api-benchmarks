@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 import fastpg
 import ryjwt
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from lothc import HTTPClient
 from pydantic import BaseModel
 from settings import Settings
@@ -22,19 +22,9 @@ def _get_settings() -> Settings:
     return Settings()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    settings = _get_settings()
-    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
-    async with HTTPClient(**settings.upstream_client_options) as client:
-        app.state.auth = AuthService(settings.jwt_key)
-        app.state.user_service = UserService(pool)
-        app.state.catalog_service = CatalogService(client)
-        yield
-    await pool.close()
-
-
-app = FastAPI(lifespan=lifespan)
+# Routes are collected on a router and mounted at the bottom, once the services
+# the lifespan builds are defined (FastAPI's "Bigger Applications" layout).
+router = APIRouter()
 
 
 # --- Test 1: GET /info -------------------------------------------------------
@@ -59,7 +49,7 @@ class Info(BaseModel):
     nested: Nested
 
 
-@app.get("/info")
+@router.get("/info")
 async def get_info(response: Response) -> Info:
     response.headers["x-response-id"] = str(uuid.uuid4())
     return Info(
@@ -126,7 +116,7 @@ async def _get_current_user(request: Request, authorization: str = Header(defaul
 type UserDep = Annotated[User, Depends(_get_current_user)]
 
 
-@app.post("/movies", status_code=201)
+@router.post("/movies", status_code=201)
 async def create_movie(movie: MovieIn, user: UserDep) -> Movie:
     return Movie(id=str(uuid.uuid4()), user=user, **movie.model_dump())
 
@@ -173,7 +163,7 @@ async def _get_catalog_service(request: Request) -> CatalogService:
 type CatalogServiceDep = Annotated[CatalogService, Depends(_get_catalog_service)]
 
 
-@app.get("/catalog")
+@router.get("/catalog")
 async def catalog(catalog_service: CatalogServiceDep) -> Product:
     return await catalog_service.fetch()
 
@@ -210,6 +200,25 @@ async def _get_user_service(request: Request) -> UserService:
 type UserServiceDep = Annotated[UserService, Depends(_get_user_service)]
 
 
-@app.get("/users/me")
+@router.get("/users/me")
 async def users_me(user: UserDep, user_service: UserServiceDep) -> Profile:
     return await user_service.get_profile(user.id)
+
+
+# --- Wiring ------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = _get_settings()
+    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
+    async with HTTPClient(**settings.upstream_client_options) as client:
+        app.state.auth = AuthService(settings.jwt_key)
+        app.state.user_service = UserService(pool)
+        app.state.catalog_service = CatalogService(client)
+        yield
+    await pool.close()
+
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)

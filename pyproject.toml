@@ -17,6 +17,7 @@ dependencies = [
 dev = [
     "ruff>=0.11.5",
     "pyright>=1.1.390",
+    "pre-commit>=4.0",
 ]
 
 [tool.uv]
@@ -37,7 +38,14 @@ taglydb = { path = "vendor/taglydb-client" }
 # auto-discovery (the `.venv` next to this file) already resolves imports for
 # both — no per-subtree executionEnvironments needed.
 [tool.pyright]
-include = ["bench.py", "export_results.py", "ec2_tail_logs.py", "ec2_launch.py", "loadtest"]
+include = [
+    "bench.py",
+    "check_definition_order.py",
+    "export_results.py",
+    "ec2_tail_logs.py",
+    "ec2_launch.py",
+    "loadtest",
+]
 exclude = ["**/__pycache__", "**/.venv", "**/node_modules", "**/target", "services", "vendor"]
 typeCheckingMode = "standard"
 pythonVersion = "3.13"
