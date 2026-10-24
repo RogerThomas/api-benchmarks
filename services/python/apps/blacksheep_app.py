@@ -18,8 +18,6 @@ from lothc import HTTPClient
 from pydantic import BaseModel
 from settings import Settings
 
-_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
-
 app = Application()
 settings = Settings()
 app.services.register(Settings, instance=settings)
@@ -159,7 +157,11 @@ async def users_me(authorization: AuthHeader, pool: fastpg.Pool, jwt_key: ryjwt.
     if user is None:
         return json({"error": "invalid token"}, status=401)
     try:
-        profile = await pool.select_one(_GET_USER_SQL, user.id, into=Profile)
+        profile = await pool.select_one(
+            "SELECT id, name, email, address, city, country FROM users WHERE id = $1",
+            user.id,
+            into=Profile,
+        )
     except fastpg.NoRowsError:
         return json({"error": "user not found"}, status=404)
     return json(profile)

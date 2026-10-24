@@ -18,8 +18,6 @@ from psycopg_pool import ConnectionPool
 from pydantic import BaseModel, ValidationError
 from settings import Settings
 
-_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = %s"
-
 bp = Blueprint("bench", __name__)
 
 
@@ -129,7 +127,10 @@ def catalog():
 def users_me():
     pool: ConnectionPool = current_app.extensions["db_pool"]
     with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute(_GET_USER_SQL, (g.user["id"],))
+        cur.execute(
+            "SELECT id, name, email, address, city, country FROM users WHERE id = %s",
+            (g.user["id"],),
+        )
         row = cur.fetchone()
     if row is None:
         return jsonify({"error": "user not found"}), 404

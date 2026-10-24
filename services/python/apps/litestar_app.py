@@ -14,8 +14,6 @@ from litestar.exceptions import NotAuthorizedException, NotFoundException
 from lothc import HTTPClient
 from settings import Settings
 
-_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
-
 
 # --- Test 1: GET /info -------------------------------------------------------
 
@@ -155,7 +153,11 @@ class Profile(msgspec.Struct):
 async def users_me(state: State, user: User) -> Profile:
     pool: fastpg.Pool = state.pool
     try:
-        return await pool.select_one(_GET_USER_SQL, user.id, into=Profile)
+        return await pool.select_one(
+            "SELECT id, name, email, address, city, country FROM users WHERE id = $1",
+            user.id,
+            into=Profile,
+        )
     except fastpg.NoRowsError:
         raise NotFoundException("user not found") from None
 

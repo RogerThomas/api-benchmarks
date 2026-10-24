@@ -11,8 +11,6 @@ dependencies = []
 package = false
 
 [tool.uv.sources]
-# fastpg isn't on PyPI: a linux/arm64 cp314 wheel built from its repo with maturin.
-fastpg = { path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" }
 # robyn publishes no cp314 wheels (and no sdist), so build its release tag from source.
 robyn = { url = "https://github.com/sparckles/Robyn/archive/refs/tags/v0.88.0.tar.gz" }
 
@@ -57,13 +55,7 @@ blacksheep = [
     "fastpg[pydantic]",
     "pydantic",
 ]
-robyn = [
-    "robyn",
-    "ryjwt",
-    "lothc[pydantic]",
-    "fastpg[pydantic]",
-    "pydantic",
-]
+robyn = ["robyn", "ryjwt", "lothc[pydantic]", "fastpg[pydantic]", "pydantic"]
 django-bolt = [
     "django>=5.2",
     "django-bolt",

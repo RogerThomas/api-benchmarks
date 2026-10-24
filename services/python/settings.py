@@ -7,13 +7,13 @@ compose.<fw>.yml.
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True, slots=True)
 class Settings:
     jwt_secret: str = "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
-    jwt_algorithm: str = "HS256"
+    jwt_algorithm: Literal["HS256"] = "HS256"
 
     upstream_url: str = "http://upstream:8000"
     upstream_api_key: str = "upk_bench_9f8e7d6c5b4a32100fedcba987654321"

@@ -85,8 +85,6 @@ type Profile struct {
 	Country string `json:"country"`
 }
 
-const getUserSQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
-
 func main() {
 	secret := []byte(os.Getenv("JWT_SECRET"))
 	upstreamURL := os.Getenv("UPSTREAM_URL")
@@ -197,7 +195,11 @@ func main() {
 		}
 
 		var p Profile
-		err := pool.QueryRow(c.Request.Context(), getUserSQL, user.ID).
+		err := pool.QueryRow(
+			c.Request.Context(),
+			"SELECT id, name, email, address, city, country FROM users WHERE id = $1",
+			user.ID,
+		).
 			Scan(&p.ID, &p.Name, &p.Email, &p.Address, &p.City, &p.Country)
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})

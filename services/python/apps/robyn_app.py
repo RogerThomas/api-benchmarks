@@ -20,7 +20,6 @@ from pydantic import BaseModel
 from robyn import Request, Response, Robyn, jsonify
 from settings import Settings
 
-_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
 _JSON = {"Content-Type": "application/json"}
 
 
@@ -190,7 +189,11 @@ async def users_me(request: Request, global_dependencies) -> Response:
         )
     pool = await _get_db_pool(settings)
     try:
-        profile = await pool.select_one(_GET_USER_SQL, user["id"], into=Profile)
+        profile = await pool.select_one(
+            "SELECT id, name, email, address, city, country FROM users WHERE id = $1",
+            user["id"],
+            into=Profile,
+        )
     except fastpg.NoRowsError:
         return Response(
             status_code=404,

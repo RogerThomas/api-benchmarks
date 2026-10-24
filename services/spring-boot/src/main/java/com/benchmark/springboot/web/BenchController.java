@@ -32,9 +32,6 @@ public class BenchController {
 
     private static final Logger log = LoggerFactory.getLogger(BenchController.class);
 
-    private static final String GET_USER_SQL =
-            "SELECT id, name, email, address, city, country FROM users WHERE id = ?";
-
     private final JwtService jwtService;
     private final JdbcTemplate jdbcTemplate;
     private final RestClient upstreamClient;
@@ -98,7 +95,7 @@ public class BenchController {
         Claims claims = jwtService.verifyOrThrow(authorization);
         try {
             Profile profile = jdbcTemplate.queryForObject(
-                    GET_USER_SQL,
+                    "SELECT id, name, email, address, city, country FROM users WHERE id = ?",
                     (rs, rowNum) -> new Profile(
                             rs.getString("id"),
                             rs.getString("name"),

@@ -198,8 +198,6 @@ class Profile(CamelStruct):
     country: str
 
 
-_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
-
 # fastpg runs on the asyncio loop that created the pool, so build it lazily on
 # the first request (the serving loop), not at import time.
 _db_pool: fastpg.Pool | None = None
@@ -222,6 +220,10 @@ async def users_me(request) -> Profile:
     user = _decode_bearer(request.headers.get("authorization", ""))
     pool = await _get_db_pool()
     try:
-        return await pool.select_one(_GET_USER_SQL, user.id, into=Profile)
+        return await pool.select_one(
+            "SELECT id, name, email, address, city, country FROM users WHERE id = $1",
+            user.id,
+            into=Profile,
+        )
     except fastpg.NoRowsError:
         raise NotFound(detail="user not found") from None

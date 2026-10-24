@@ -211,26 +211,43 @@ wheels = [
 
 [[package]]
 name = "fastpg"
-version = "0.1.0"
-source = { path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" }
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "msgspec" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/48/8f/fab8553429e3b9d6e73d12fa21766256349b7b501ac3514af4af9e1dc3f9/fastpg-0.1.2.tar.gz", hash = "sha256:a9851a8201b4415921071d2d60acfee9471e5785f14ba1467d5c96dae89a9a4b", size = 180639, upload-time = "2026-10-22T20:32:27.294Z" }
 wheels = [
-    { filename = "fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:01fc5caf3a5b65775c6238d77f580da20084d1da9968b770a7521edcb68242c2" },
+    { url = "https://files.pythonhosted.org/packages/61/42/67e3dbb41df8571c4a99c14ed60b80553240e92da58abbe69aecbb3c2d5e/fastpg-0.1.2-cp314-cp314-macosx_10_12_x86_64.whl", hash = "sha256:6d40cf711c67349ec5f91072de32ff32030821fdae339fc7955df1df07910e97", size = 1754994, upload-time = "2026-10-22T20:31:44.165Z" },
+    { url = "https://files.pythonhosted.org/packages/14/6a/93dc2b056ff759c420bf6eb2770dee755b816d5c37a2617e14c441b6aecf/fastpg-0.1.2-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:2bad050dadb309298dd06cc3385daa36bab9bdddb1eb435ca9cdb4b7edda16ff", size = 1639599, upload-time = "2026-10-22T20:31:45.719Z" },
+    { url = "https://files.pythonhosted.org/packages/24/1f/b7b9b71cca0508bdef8b5510612e6a259dcb8eb0122d86ba2208ec3736c2/fastpg-0.1.2-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:6f23f9bf59082a0ab556cc92f1b1b9d6b2f318abac4eee51a7330d1b4c80e5ef", size = 1750973, upload-time = "2026-10-22T20:31:47.42Z" },
+    { url = "https://files.pythonhosted.org/packages/90/17/69f2ae1e925ea3cff0fd899937e68f25001ebb46fba54e055f0a49ab9297/fastpg-0.1.2-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:57aea886a71b64307173683b6ac80602da1382bbdcdfbb0a3525975e85ede845", size = 1806896, upload-time = "2026-10-22T20:31:49.191Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/2a/46c96dbfe3e2da119a487a6b97f7d4cb8e0741febf74c1775f850992a999/fastpg-0.1.2-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:5c0d2ab72dd46e64148f13dafdf147e25ac5e4619afbfbd5f970138d316d3678", size = 1929687, upload-time = "2026-10-22T20:31:51.195Z" },
+    { url = "https://files.pythonhosted.org/packages/18/b7/10bf666083c0a605ebbde1f053c77bfaaa0872cf2ee5ed9b54137c408888/fastpg-0.1.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:3cea94e1841c1d0fd6313d6db47f0fee4730994228c0025c0d8198d2907bc051", size = 2023552, upload-time = "2026-10-22T20:31:52.761Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/56/b50db1d8ec184efd3f42415a9ba6c0d604b3ec2f01b6b431fddb0129a23d/fastpg-0.1.2-cp314-cp314t-macosx_10_12_x86_64.whl", hash = "sha256:16dd9b9bca66f35985aaef5237a8ae6e01817a3651f67be3f18ba8a910cd7b9e", size = 1752443, upload-time = "2026-10-22T20:31:54.484Z" },
+    { url = "https://files.pythonhosted.org/packages/16/28/028dd21045099eaca08e535ba0fe5ab2554b28eaa7fe0c2185e05c8eea18/fastpg-0.1.2-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:00bc4b1202638c5ecc58536349006309b016cbc4728ce76d1c0b2545f8e14bef", size = 1637439, upload-time = "2026-10-22T20:31:56.098Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/29/74c53082915be028231a619b2db3fe647ff03a4f84617dfd99fa92c70514/fastpg-0.1.2-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:a7f2ba6f3be02c7ccf56ae63322921786e0f2fdc04e372fa79a6efbad8a5f47b", size = 1750978, upload-time = "2026-10-22T20:31:57.999Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/b4/c777316aaac2281fc78bd7f7ae7df4f37c0f42810864cda064a233df3990/fastpg-0.1.2-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:ecfcab6f9fb71f66a4316dd45355fc243ffb53b2671d8370e1afe1c69cae5094", size = 1808624, upload-time = "2026-10-22T20:31:59.922Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/7a/8ae80d8cda6204d932089a574d228f5133ad2a896eb4d4442f746cadd1ba/fastpg-0.1.2-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:b76b420692cdcaa57cf7ed0ea5e89cd39f1933b05f13e61fd3fa1e2693f26825", size = 1929539, upload-time = "2026-10-22T20:32:01.969Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/26/6830e853e423a2c28ffe5e5c4b57fb63a9c3789601211b57b0d5d7dac402/fastpg-0.1.2-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:d816155d4ad688eeaba4ae109819930bb03daba584ad51e1e7cee014493bb209", size = 2025389, upload-time = "2026-10-22T20:32:03.957Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/63/bd42e15e206fcc6b22e16c158820c49a2d929688301e4e31f05cf5155612/fastpg-0.1.2-cp315-cp315-macosx_10_12_x86_64.whl", hash = "sha256:c123a6275400b5dd8309d5e3aefe0d2e471132f26d95c884ae894b20983127a5", size = 1755049, upload-time = "2026-10-22T20:32:05.62Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/ba/3faebd8ba67a2b58b72353151b3e9c5a71965d06ff363fed58839d2ab2eb/fastpg-0.1.2-cp315-cp315-macosx_11_0_arm64.whl", hash = "sha256:bf010cd21fb962cb939edd965ac5a0bef58246ec2efa695c2646926af1fb5016", size = 1639802, upload-time = "2026-10-22T20:32:07.196Z" },
+    { url = "https://files.pythonhosted.org/packages/17/22/53b55e716dcaa765c35621ac684a9166f14b7f4d21350e329d928334cdad/fastpg-0.1.2-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:392a17bb257b6a501388c7fd6f0fd3fa9651261fe3bd7400a2b2327042d176b1", size = 1751017, upload-time = "2026-10-22T20:32:08.936Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/49/8169f39adddcc6ab07003af2efffbcbfc76313546ec323ec4b6100373a2f/fastpg-0.1.2-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:6cd04b56fd669cf73aa6ac0fecc97ed664eababca30cab662b650a06086bbd47", size = 1807169, upload-time = "2026-10-22T20:32:10.597Z" },
+    { url = "https://files.pythonhosted.org/packages/41/7f/bfdbef97dcd8dbc73aa14628819b92093e1a74f77be0ce366d489e713d88/fastpg-0.1.2-cp315-cp315-musllinux_1_2_aarch64.whl", hash = "sha256:f5f062bf531cad0976e14111e0b2bd59d1b80d9ac9041c946a0efebcb57e3bcf", size = 1929662, upload-time = "2026-10-22T20:32:12.274Z" },
+    { url = "https://files.pythonhosted.org/packages/94/14/0dd9676f5b1da270d61b408af3aea2e98ca003b783c42dd69c44f56b46bf/fastpg-0.1.2-cp315-cp315-musllinux_1_2_x86_64.whl", hash = "sha256:7aded32b0aaaa3ec7c9dbacda8ec0bfc267bc509e377e14b5bb92fd6feff9920", size = 2023782, upload-time = "2026-10-22T20:32:14.224Z" },
+    { url = "https://files.pythonhosted.org/packages/67/dc/979983dea6c7084e1909830cb4a5430982175952dc582ff90d1b421b23a7/fastpg-0.1.2-cp315-cp315t-macosx_10_12_x86_64.whl", hash = "sha256:54480eea425bc164aa1c2e205f22ee4cc65cbdee01bea7ad298e1a842d2f93b6", size = 1752762, upload-time = "2026-10-22T20:32:15.911Z" },
+    { url = "https://files.pythonhosted.org/packages/40/26/365c24009b1d71cb5f3134888ea5096f141ecf92550319ee81b3500de03b/fastpg-0.1.2-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:9675db44eb2b52bf8d5b2a86e7902aa4afd1e4423a2d5227f406892960e2bde0", size = 1637514, upload-time = "2026-10-22T20:32:17.641Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/41/530c32a0b32801365b9e3baa26ae219643b965c66fad0bf5093016315da3/fastpg-0.1.2-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:82bb2ab5aa1181f8cdaedd3ce49f6dd60439aa5b291a1a14d88167c5d0b0970f", size = 1751013, upload-time = "2026-10-22T20:32:19.464Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/0b/9277c715b0a9b56283f2ac06f2990cc32a5cc90aa6630257a150ed70200a/fastpg-0.1.2-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:07e6a26d10dfa87bae0b06cde027d8ee1b47b3dad32c1c172c13c2f2c7d21134", size = 1808887, upload-time = "2026-10-22T20:32:21.461Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/6d/5e91ffe860597e638ce52bee67c7fde8474631e569e5f0b889795c1525dc/fastpg-0.1.2-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:4f393d6b1944653f7021d6dd22b5f924d274274d4e39a5e2ce7946229c332d9b", size = 1929693, upload-time = "2026-10-22T20:32:23.545Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/bc/732098d30a1c1bb81cecd576afb9ca1ed936d836187071eb045f2737d366/fastpg-0.1.2-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:a6cc62bce706f9ab03ec0148cb6727f57310fb357033c51cb025e0ee0de8003f", size = 2025623, upload-time = "2026-10-22T20:32:25.435Z" },
 ]
 
 [package.optional-dependencies]
 pydantic = [
     { name = "pydantic" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "msgspec", specifier = ">=0.22.0" },
-    { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.14" },
-]
-provides-extras = ["pydantic"]
 
 [[package]]
 name = "flask"
@@ -499,7 +516,7 @@ robyn = [
 [package.metadata.requires-dev]
 blacksheep = [
     { name = "blacksheep" },
-    { name = "fastpg", extras = ["pydantic"], path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
+    { name = "fastpg", extras = ["pydantic"] },
     { name = "lothc", extras = ["pydantic"] },
     { name = "peregrine-server", extras = ["uvloop"] },
     { name = "pydantic" },
@@ -508,14 +525,14 @@ blacksheep = [
 django-bolt = [
     { name = "django", specifier = ">=5.2" },
     { name = "django-bolt" },
-    { name = "fastpg", path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
+    { name = "fastpg" },
     { name = "lothc" },
     { name = "msgspec" },
     { name = "ryjwt" },
 ]
 fastapi = [
     { name = "fastapi" },
-    { name = "fastpg", extras = ["pydantic"], path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
+    { name = "fastpg", extras = ["pydantic"] },
     { name = "lothc", extras = ["pydantic"] },
     { name = "peregrine-server", extras = ["uvloop"] },
     { name = "pydantic" },
@@ -530,21 +547,21 @@ flask = [
     { name = "ryjwt" },
 ]
 jero = [
-    { name = "fastpg", path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
+    { name = "fastpg" },
     { name = "jero", specifier = ">=0.0.27" },
     { name = "lothc", extras = ["msgspec"] },
     { name = "peregrine-server", extras = ["uvloop"] },
     { name = "ryjwt", extras = ["msgspec"] },
 ]
 litestar = [
-    { name = "fastpg", path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
+    { name = "fastpg" },
     { name = "litestar" },
     { name = "lothc", extras = ["msgspec"] },
     { name = "peregrine-server", extras = ["uvloop"] },
     { name = "ryjwt" },
 ]
 robyn = [
-    { name = "fastpg", extras = ["pydantic"], path = "vendor/fastpg-0.1.0-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" },
+    { name = "fastpg", extras = ["pydantic"] },
     { name = "lothc", extras = ["pydantic"] },
     { name = "pydantic" },
     { name = "robyn", url = "https://github.com/sparckles/Robyn/archive/refs/tags/v0.88.0.tar.gz" },

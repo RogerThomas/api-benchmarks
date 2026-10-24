@@ -13,8 +13,6 @@ from lothc import HTTPClient
 from pydantic import BaseModel
 from settings import Settings
 
-_GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
-
 
 @lru_cache
 def _get_settings() -> Settings:
@@ -188,7 +186,11 @@ class UserService:
 
     async def get_profile(self, user_id: str) -> Profile:
         try:
-            return await self._pool.select_one(_GET_USER_SQL, user_id, into=Profile)
+            return await self._pool.select_one(
+                "SELECT id, name, email, address, city, country FROM users WHERE id = $1",
+                user_id,
+                into=Profile,
+            )
         except fastpg.NoRowsError:
             raise HTTPException(status_code=404, detail="user not found") from None
 
