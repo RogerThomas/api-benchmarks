@@ -89,7 +89,7 @@ async def provide_user(request: Request, state: State) -> User:
     authorization = request.headers.get("Authorization", "")
     token = authorization.removeprefix("Bearer ").strip()
     try:
-        claims = state.settings.jwt_key.decode(token, into=Claims)
+        claims = state.jwt_key.decode(token, into=Claims)
     except ryjwt.InvalidTokenError as exc:  # includes a token missing sub/name
         raise NotAuthorizedException("invalid token") from exc
     return User(id=claims.sub, name=claims.name)
@@ -163,13 +163,14 @@ async def users_me(state: State, user: User) -> Profile:
 @asynccontextmanager
 async def lifespan(app: Litestar):
     settings = Settings()
-    app.state.settings = settings
-    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
-    async with HTTPClient(**settings.upstream_client_options) as client:
+    app.state.jwt_key = ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    async with (
+        await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size) as pool,
+        HTTPClient(**settings.upstream_client_options) as client,
+    ):
         app.state.client = client
         app.state.pool = pool
         yield
-    await pool.close()
 
 
 app = Litestar(route_handlers=[get_info, create_movie, catalog, users_me], lifespan=[lifespan])

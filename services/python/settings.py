@@ -1,28 +1,25 @@
-"""Shared settings for the Python benchmark apps (pydantic-settings).
+"""Shared settings for the Python benchmark apps.
 
-In docker every field is set by env vars from each framework's compose.<fw>.yml
-(JWT_SECRET, UPSTREAM_URL, DB_HOST, …); the defaults below only matter when
-running an app directly on the host (e.g. against `task upstream-native`).
-Field names map to env vars case-insensitively, so `db_host` reads `DB_HOST`.
+Plain values, inlined: nothing here is a real secret (they're fixed benchmark
+fixtures), and the hosts are the compose service names on the bench network.
+The runner and the non-Python apps get the same values from compose.base.yml /
+compose.<fw>.yml.
 """
 
-from functools import cached_property
+from dataclasses import dataclass
 from typing import Any
 
-import ryjwt
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
+@dataclass(frozen=True, slots=True)
+class Settings:
+    jwt_secret: str = "b7c1e9a4f2d68350a1c9e7b5d3f10864a2c6e8b0d4f79351"
+    jwt_algorithm: str = "HS256"
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    jwt_secret: str = "bench-secret-please-change-0123456"  # ryjwt wants >= 32 bytes for HS256
-
-    upstream_url: str = "http://127.0.0.1:6700"
-    upstream_api_key: str = "upstream-secret-key"
+    upstream_url: str = "http://upstream:8000"
+    upstream_api_key: str = "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
     http_pool_size: int = 64  # same outbound budget as Gin/Elysia/Spring
 
-    db_host: str = "127.0.0.1"
+    db_host: str = "postgres"
     db_port: int = 5432
     db_name: str = "bench"
     db_user: str = "bench"
@@ -50,8 +47,3 @@ class Settings(BaseSettings):
             "timeout": 10,
             "follow_redirects": False,
         }
-
-    @cached_property
-    def jwt_key(self) -> ryjwt.SecretKey:
-        """Built once per process, so requests only pay for the decode."""
-        return ryjwt.SecretKey(self.jwt_secret, algorithms=["HS256"])

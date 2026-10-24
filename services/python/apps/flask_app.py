@@ -1,9 +1,9 @@
 """Flask benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me).
 
 Flask is WSGI; served under peregrine (protocol auto-detected). Uses Flask's recommended
-application-factory pattern: settings live in ``app.config``, and the shared
-lothc sync client + psycopg pool are attached to ``app.extensions``, reached
-in handlers via ``current_app`` (no module-level globals).
+application-factory pattern: the JWT key, the shared lothc sync client and the
+psycopg pool are attached to ``app.extensions``, reached in handlers via
+``current_app`` (no module-level globals).
 """
 
 import functools
@@ -67,11 +67,11 @@ def validation_failed(exc: ValidationError):
 def auth_required(view: Callable) -> Callable:
     @functools.wraps(view)
     def wrapper(*args, **kwargs):
-        settings: Settings = current_app.config["SETTINGS"]
+        jwt_key: ryjwt.SecretKey = current_app.extensions["jwt_key"]
         authorization = request.headers.get("Authorization", "")
         token = authorization.removeprefix("Bearer ").strip()
         try:
-            claims = settings.jwt_key.decode(token, into=Claims)
+            claims = jwt_key.decode(token, into=Claims)
         except ryjwt.InvalidTokenError:  # includes a token missing sub/name
             return jsonify({"error": "invalid token"}), 401
         g.user = {"id": claims.sub, "name": claims.name}
@@ -148,7 +148,7 @@ def create_app() -> Flask:
     them to the app, then register the routes."""
     app = Flask(__name__)
     settings = Settings()
-    app.config["SETTINGS"] = settings
+    app.extensions["jwt_key"] = ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     # Flask is sync; one lothc SyncHTTPClient (HTTP) and one psycopg pool (DB),
     # attached to the app rather than held as module-level globals. The client
     # is entered once here and lives as long as the process.

@@ -207,7 +207,8 @@ class Factory(BaseFactory):
         return Settings()
 
     def create_auth(self) -> JWTAuth:
-        return JWTAuth(self._settings.jwt_key)
+        settings = self._settings
+        return JWTAuth(ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm]))
 
     async def create_catalog_service(self) -> CatalogService:
         client = await self._aenter(HTTPClient(**self._settings.upstream_client_options))

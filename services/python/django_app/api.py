@@ -34,6 +34,7 @@ from lothc import HTTPClient
 from settings import Settings
 
 _settings = Settings()
+_jwt_key = ryjwt.SecretKey(_settings.jwt_secret, algorithms=[_settings.jwt_algorithm])
 
 api = BoltAPI(enable_logging=False)
 
@@ -55,7 +56,7 @@ class Claims(msgspec.Struct):
 def _decode_bearer(header: str) -> User:
     token = header.removeprefix("Bearer ").strip()
     try:
-        claims = _settings.jwt_key.decode(token, into=Claims)
+        claims = _jwt_key.decode(token, into=Claims)
     except ryjwt.InvalidTokenError as exc:  # includes a token missing sub/name
         raise Unauthorized(detail="invalid token") from exc
     return User(id=claims.sub, name=claims.name)

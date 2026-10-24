@@ -211,13 +211,14 @@ async def users_me(user: UserDep, user_service: UserServiceDep) -> Profile:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = _get_settings()
-    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
-    async with HTTPClient(**settings.upstream_client_options) as client:
-        app.state.auth = AuthService(settings.jwt_key)
+    async with (
+        await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size) as pool,
+        HTTPClient(**settings.upstream_client_options) as client,
+    ):
+        app.state.auth = AuthService(ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm]))
         app.state.user_service = UserService(pool)
         app.state.catalog_service = CatalogService(client)
         yield
-    await pool.close()
 
 
 app = FastAPI(lifespan=lifespan)

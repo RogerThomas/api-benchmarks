@@ -2,9 +2,9 @@
 
 Robyn ships its own Rust server; run with: python robyn_app.py --processes 1 --workers 1
 
-Settings are provided through Robyn's global dependency injection
-(``app.inject_global``); handlers receive them via the ``global_dependencies``
-argument. The lothc client and the fastpg pool are the exceptions: both are
+Settings and the JWT key are provided through Robyn's global dependency
+injection (``app.inject_global``); handlers receive them via the
+``global_dependencies`` argument. The lothc client and the fastpg pool are the exceptions: both are
 opened on the loop that serves requests, so they're built lazily on first use.
 """
 
@@ -79,7 +79,8 @@ class Profile(BaseModel):
 
 def build_dependencies() -> dict:
     """Build the shared resources Robyn injects into every route."""
-    return {"settings": Settings()}
+    settings = Settings()
+    return {"settings": settings, "jwt_key": ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm])}
 
 
 app = Robyn(__file__)
@@ -122,7 +123,7 @@ def get_info(request: Request) -> Response:
 @app.post("/movies")
 def create_movie(request: Request, global_dependencies, movie: MovieIn) -> Response:
     # `movie: MovieIn` is validated natively by Robyn from the request body.
-    user = authenticate(request, global_dependencies["settings"].jwt_key)
+    user = authenticate(request, global_dependencies["jwt_key"])
     if user is None:
         return Response(
             status_code=401,
@@ -180,7 +181,7 @@ async def _get_db_pool(settings: Settings) -> fastpg.Pool:
 @app.get("/users/me")
 async def users_me(request: Request, global_dependencies) -> Response:
     settings: Settings = global_dependencies["settings"]
-    user = authenticate(request, settings.jwt_key)
+    user = authenticate(request, global_dependencies["jwt_key"])
     if user is None:
         return Response(
             status_code=401,

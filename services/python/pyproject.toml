@@ -24,7 +24,6 @@ jero = [
     "ryjwt[msgspec]",
     "lothc[msgspec]",
     "fastpg",
-    "pydantic-settings",
     "jero>=0.0.27",
 ]
 fastapi = [
@@ -33,7 +32,7 @@ fastapi = [
     "ryjwt",
     "lothc[pydantic]",
     "fastpg[pydantic]",
-    "pydantic-settings",
+    "pydantic",
 ]
 litestar = [
     "litestar",
@@ -41,7 +40,6 @@ litestar = [
     "ryjwt",
     "lothc[msgspec]",
     "fastpg",
-    "pydantic-settings",
 ]
 flask = [
     "flask",
@@ -49,7 +47,7 @@ flask = [
     "ryjwt",
     "lothc[pydantic]",
     "psycopg[binary,pool]",
-    "pydantic-settings",
+    "pydantic",
 ]
 blacksheep = [
     "blacksheep",
@@ -57,14 +55,14 @@ blacksheep = [
     "ryjwt",
     "lothc[pydantic]",
     "fastpg[pydantic]",
-    "pydantic-settings",
+    "pydantic",
 ]
 robyn = [
     "robyn",
     "ryjwt",
     "lothc[pydantic]",
     "fastpg[pydantic]",
-    "pydantic-settings",
+    "pydantic",
 ]
 django-bolt = [
     "django>=5.2",
@@ -73,5 +71,4 @@ django-bolt = [
     "ryjwt",
     "lothc",
     "fastpg",
-    "pydantic-settings",
 ]

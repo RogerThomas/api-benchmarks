@@ -1,6 +1,6 @@
 """Blacksheep benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me).
 
-Settings, the lothc HTTP client and the fastpg pool live in BlackSheep's DI
+Settings, the JWT key, the lothc HTTP client and the fastpg pool live in BlackSheep's DI
 container (rodi) and are injected into handlers by type. The client and pool are
 opened/closed with ``@app.lifespan`` — BlackSheep's documented pattern for
 resources bound to the application lifecycle. Request and upstream bodies are
@@ -21,7 +21,9 @@ from settings import Settings
 _GET_USER_SQL = "SELECT id, name, email, address, city, country FROM users WHERE id = $1"
 
 app = Application()
-app.services.register(Settings, instance=Settings())
+settings = Settings()
+app.services.register(Settings, instance=settings)
+app.services.register(ryjwt.SecretKey, instance=ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm]))
 
 
 @app.lifespan
@@ -35,10 +37,9 @@ async def configure_http_client(app: Application):
 @app.lifespan
 async def configure_db_pool(app: Application):
     settings = app.services.resolve(Settings)
-    pool = await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size)
-    app.services.register(fastpg.Pool, instance=pool)
-    yield
-    await pool.close()
+    async with await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size) as pool:
+        app.services.register(fastpg.Pool, instance=pool)
+        yield
 
 
 # Optional, so a missing header is a 401 (like any bad token), not a 400.
@@ -102,8 +103,8 @@ class Movie(MovieIn):
 
 
 @app.router.post("/movies")
-async def create_movie(authorization: AuthHeader, data: FromJSON[MovieIn], settings: Settings):
-    user = authenticate(authorization, settings.jwt_key)
+async def create_movie(authorization: AuthHeader, data: FromJSON[MovieIn], jwt_key: ryjwt.SecretKey):
+    user = authenticate(authorization, jwt_key)
     if user is None:
         return json({"error": "invalid token"}, status=401)
     movie = Movie(id=str(uuid.uuid4()), user=user, **data.value.model_dump())
@@ -153,8 +154,8 @@ class Profile(BaseModel):
 
 
 @app.router.get("/users/me")
-async def users_me(authorization: AuthHeader, pool: fastpg.Pool, settings: Settings):
-    user = authenticate(authorization, settings.jwt_key)
+async def users_me(authorization: AuthHeader, pool: fastpg.Pool, jwt_key: ryjwt.SecretKey):
+    user = authenticate(authorization, jwt_key)
     if user is None:
         return json({"error": "invalid token"}, status=401)
     try:
