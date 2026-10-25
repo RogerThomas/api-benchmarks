@@ -1,4 +1,11 @@
-"""FastAPI benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me)."""
+"""FastAPI benchmark app — tests 1 (info), 2 (movie), 3 (proxy), 4 (/users/me).
+
+Laid out models -> services -> app -> routes, so every name is defined before
+it's used and routes register straight on `app` with `@app.get`, FastAPI's
+single-file style. (An APIRouter + `app.include_router` would also read in
+order, but FastAPI resolves included routes through an extra matching layer on
+every request: ~10% slower on every test here, see reports/20261025T075303.)
+"""
 
 import uuid
 from contextlib import asynccontextmanager
@@ -8,7 +15,7 @@ from typing import Annotated, Literal
 
 import fastpg
 import ryjwt
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from lothc import HTTPClient
 from pydantic import BaseModel
 from settings import Settings
@@ -20,12 +27,7 @@ def _get_settings() -> Settings:
     return Settings()
 
 
-# Routes are collected on a router and mounted at the bottom, once the services
-# the lifespan builds are defined (FastAPI's "Bigger Applications" layout).
-router = APIRouter()
-
-
-# --- Test 1: GET /info -------------------------------------------------------
+# --- Models ------------------------------------------------------------------
 
 
 class Nested(BaseModel):
@@ -45,24 +47,6 @@ class Info(BaseModel):
     tags: list[InfoTag]
     createdAt: str
     nested: Nested
-
-
-@router.get("/info")
-async def get_info(response: Response) -> Info:
-    response.headers["x-response-id"] = str(uuid.uuid4())
-    return Info(
-        id="info-1",
-        name="Benchmark Info",
-        count=42,
-        ratio=3.14159,
-        active=True,
-        tags=["alpha", "beta", "gamma"],
-        createdAt="2026-01-01T00:00:00Z",
-        nested=Nested(level=2, label="nested"),
-    )
-
-
-# --- Test 2: POST /movies (JWT-authenticated) --------------------------------
 
 
 class MovieIn(BaseModel):
@@ -88,40 +72,6 @@ class Claims(BaseModel):
     name: str
 
 
-@dataclass(slots=True)
-class AuthService:
-    """Verifies the bearer JWT. Built once in the lifespan, shared via app.state."""
-
-    jwt_key: ryjwt.SecretKey
-
-    def authenticate(self, authorization: str) -> User:
-        token = authorization.removeprefix("Bearer ").strip()
-        try:
-            claims = self.jwt_key.decode(token, into=Claims)
-        except ryjwt.InvalidTokenError:  # includes a token missing sub/name
-            raise HTTPException(status_code=401, detail="invalid token")
-        return User(id=claims.sub, name=claims.name)
-
-
-# Async dependency: runs on the event loop (no threadpool hop, unlike a sync
-# dependency). Pulls the shared AuthService off app.state and verifies the header
-# (a missing header is "" here, so it's a 401 like any bad token, not a 422).
-async def _get_current_user(request: Request, authorization: str = Header(default="")) -> User:
-    auth: AuthService = request.app.state.auth
-    return auth.authenticate(authorization)
-
-
-type UserDep = Annotated[User, Depends(_get_current_user)]
-
-
-@router.post("/movies", status_code=201)
-async def create_movie(movie: MovieIn, user: UserDep) -> Movie:
-    return Movie(id=str(uuid.uuid4()), user=user, **movie.model_dump())
-
-
-# --- Test 3: GET /catalog (proxy an authenticated upstream) ------------------
-
-
 class Vendor(BaseModel):
     id: str
     name: str
@@ -141,9 +91,36 @@ class Product(BaseModel):
     vendor: Vendor
 
 
+class Profile(BaseModel):
+    id: str
+    name: str
+    email: str
+    address: str
+    city: str
+    country: str
+
+
+# --- Services (built once in the lifespan, shared via app.state) -------------
+
+
+@dataclass(slots=True)
+class AuthService:
+    """Verifies the bearer JWT."""
+
+    jwt_key: ryjwt.SecretKey
+
+    def authenticate(self, authorization: str) -> User:
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            claims = self.jwt_key.decode(token, into=Claims)
+        except ryjwt.InvalidTokenError:  # includes a token missing sub/name
+            raise HTTPException(status_code=401, detail="invalid token")
+        return User(id=claims.sub, name=claims.name)
+
+
 @dataclass(slots=True)
 class CatalogService:
-    """Proxies the API-key-protected upstream. Built once in the lifespan and shared."""
+    """Proxies the API-key-protected upstream."""
 
     _client: HTTPClient
 
@@ -154,33 +131,9 @@ class CatalogService:
         return resp.data
 
 
-async def _get_catalog_service(request: Request) -> CatalogService:
-    return request.app.state.catalog_service
-
-
-type CatalogServiceDep = Annotated[CatalogService, Depends(_get_catalog_service)]
-
-
-@router.get("/catalog")
-async def catalog(catalog_service: CatalogServiceDep) -> Product:
-    return await catalog_service.fetch()
-
-
-# --- Test 4: GET /users/me (Postgres) ----------------------------------------
-
-
-class Profile(BaseModel):
-    id: str
-    name: str
-    email: str
-    address: str
-    city: str
-    country: str
-
-
 @dataclass(slots=True)
 class UserService:
-    """Reads user profiles from Postgres. Built once in the lifespan and shared."""
+    """Reads user profiles from Postgres."""
 
     _pool: fastpg.Pool
 
@@ -195,19 +148,7 @@ class UserService:
             raise HTTPException(status_code=404, detail="user not found") from None
 
 
-async def _get_user_service(request: Request) -> UserService:
-    return request.app.state.user_service
-
-
-type UserServiceDep = Annotated[UserService, Depends(_get_user_service)]
-
-
-@router.get("/users/me")
-async def users_me(user: UserDep, user_service: UserServiceDep) -> Profile:
-    return await user_service.get_profile(user.id)
-
-
-# --- Wiring ------------------------------------------------------------------
+# --- App ---------------------------------------------------------------------
 
 
 @asynccontextmanager
@@ -217,11 +158,82 @@ async def lifespan(app: FastAPI):
         await fastpg.create_pool(settings.db_dsn, max_size=settings.db_pool_size) as pool,
         HTTPClient(**settings.upstream_client_options) as client,
     ):
-        app.state.auth = AuthService(ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm]))
+        app.state.auth = AuthService(
+            ryjwt.SecretKey(settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        )
         app.state.user_service = UserService(pool)
         app.state.catalog_service = CatalogService(client)
         yield
 
 
 app = FastAPI(lifespan=lifespan)
-app.include_router(router)
+
+
+# --- Dependencies ------------------------------------------------------------
+
+
+# Async dependency: runs on the event loop (no threadpool hop, unlike a sync
+# dependency). Pulls the shared AuthService off app.state and verifies the header
+# (a missing header is "" here, so it's a 401 like any bad token, not a 422).
+async def _get_current_user(request: Request, authorization: str = Header(default="")) -> User:
+    auth: AuthService = request.app.state.auth
+    return auth.authenticate(authorization)
+
+
+type UserDep = Annotated[User, Depends(_get_current_user)]
+
+
+async def _get_catalog_service(request: Request) -> CatalogService:
+    return request.app.state.catalog_service
+
+
+type CatalogServiceDep = Annotated[CatalogService, Depends(_get_catalog_service)]
+
+
+async def _get_user_service(request: Request) -> UserService:
+    return request.app.state.user_service
+
+
+type UserServiceDep = Annotated[UserService, Depends(_get_user_service)]
+
+
+# --- Test 1: GET /info -------------------------------------------------------
+
+
+@app.get("/info")
+async def get_info(response: Response) -> Info:
+    response.headers["x-response-id"] = str(uuid.uuid4())
+    return Info(
+        id="info-1",
+        name="Benchmark Info",
+        count=42,
+        ratio=3.14159,
+        active=True,
+        tags=["alpha", "beta", "gamma"],
+        createdAt="2026-01-01T00:00:00Z",
+        nested=Nested(level=2, label="nested"),
+    )
+
+
+# --- Test 2: POST /movies (JWT-authenticated) --------------------------------
+
+
+@app.post("/movies", status_code=201)
+async def create_movie(movie: MovieIn, user: UserDep) -> Movie:
+    return Movie(id=str(uuid.uuid4()), user=user, **movie.model_dump())
+
+
+# --- Test 3: GET /catalog (proxy an authenticated upstream) ------------------
+
+
+@app.get("/catalog")
+async def catalog(catalog_service: CatalogServiceDep) -> Product:
+    return await catalog_service.fetch()
+
+
+# --- Test 4: GET /users/me (Postgres) ----------------------------------------
+
+
+@app.get("/users/me")
+async def users_me(user: UserDep, user_service: UserServiceDep) -> Profile:
+    return await user_service.get_profile(user.id)
