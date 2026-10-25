@@ -25,7 +25,9 @@ jero = [
     "jero>=0.0.27",
 ]
 fastapi = [
-    "fastapi",
+    # A/B: the versions before the 2026-10-25 upgrade.
+    "fastapi==0.161.1",
+    "starlette==1.9.0",
     "peregrine-server[uvloop]",
     "ryjwt",
     "lothc[pydantic]",
