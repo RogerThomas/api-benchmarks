@@ -45,7 +45,7 @@ ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup \
 
 # What every framework image starts from: distroless (glibc + libgcc/libstdc++),
 # pinned by digest, plus the interpreter.
-FROM gcr.io/distroless/cc-debian13@sha256:b2e43dc72acf58a146ed6feaf350806ae3bf4243eb5c68062d06bc13228ca2bd AS runtime
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS runtime
 COPY --from=build /python-runtime /python
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
