@@ -472,3 +472,115 @@ def main(
             file=sys.stderr,
         )
         raise SystemExit(1)
+
+
+def _describe(settings: EC2Settings, instance_ids: list[str]) -> list[dict[str, str]]:
+    out = local["aws"][
+        "ec2",
+        "describe-instances",
+        "--region",
+        settings.aws_region,
+        "--instance-ids",
+        *instance_ids,
+        "--query",
+        (
+            "Reservations[].Instances[].{id: InstanceId, name: Tags[?Key=='Name'] | [0].Value,"
+            " state: State.Name, launched: LaunchTime, zone: Placement.AvailabilityZone,"
+            " type: InstanceType, ami: ImageId}"
+        ),
+        "--output",
+        "json",
+    ]()
+    return json.loads(out)
+
+
+def _spot_price(settings: EC2Settings, instance: dict[str, str]) -> float | None:
+    """The spot $/hour in effect in the instance's zone when it launched."""
+    try:
+        out = local["aws"][
+            "ec2",
+            "describe-spot-price-history",
+            "--region",
+            settings.aws_region,
+            "--instance-types",
+            instance["type"],
+            "--product-descriptions",
+            "Linux/UNIX",
+            "--availability-zone",
+            instance["zone"],
+            "--start-time",
+            instance["launched"],
+            "--end-time",
+            instance["launched"],
+            "--query",
+            "SpotPriceHistory[].SpotPrice",
+            "--output",
+            "json",
+        ]()
+    except ProcessExecutionError as exc:
+        print(f"no spot price: {exc.stderr.strip()[-200:]}", file=sys.stderr)
+        return None
+    prices = json.loads(out)
+    return float(prices[0]) if prices else None
+
+
+def _fmt_duration(seconds: float) -> str:
+    minutes, secs = divmod(round(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m" if hours else f"{minutes}m{secs:02d}s"
+
+
+def wait(*, run_id: str, instances: str, build_seconds: int = 0, job_started: int = 0) -> None:
+    """Wait for these instances to finish (each self-terminates after its bench),
+    then print a markdown summary: what each ran on, for how long, at what cost.
+    Termination time is when a poll first sees the instance shutting down, so
+    each runtime is accurate to the 15s poll interval."""
+    settings = EC2Settings()
+    ids = instances.split()
+    ended: dict[str, datetime] = {}
+    while True:
+        described = _describe(settings, ids)
+        now = datetime.now(UTC)
+        for inst in described:
+            if inst["state"] in ("shutting-down", "terminated") and inst["id"] not in ended:
+                ended[inst["id"]] = now
+                ran = (now - datetime.fromisoformat(inst["launched"])).total_seconds()
+                name = inst["name"].removeprefix(f"{run_id}-")
+                print(f"[{now:%H:%M:%S}] {name} done after {_fmt_duration(ran)}", file=sys.stderr)
+        if len(ended) == len(ids):
+            break
+        time.sleep(15)
+
+    rows = []
+    total_cost: float | None = 0.0
+    instance_seconds = 0.0
+    for inst in sorted(described, key=lambda i: i["name"]):
+        ran = (ended[inst["id"]] - datetime.fromisoformat(inst["launched"])).total_seconds()
+        instance_seconds += ran
+        price = _spot_price(settings, inst)
+        cost = None if price is None else price * ran / 3600
+        total_cost = None if cost is None or total_cost is None else total_cost + cost
+        rows.append(
+            f"| {inst['name'].removeprefix(f'{run_id}-')} | `{inst['id']}` | {inst['zone']} "
+            f"| {_fmt_duration(ran)} "
+            f"| {'n/a' if price is None else f'${price:.4f}'} "
+            f"| {'n/a' if cost is None else f'${cost:.3f}'} |"
+        )
+    first_launch = min(datetime.fromisoformat(i["launched"]) for i in described)
+    bench_wall = (max(ended.values()) - first_launch).total_seconds()
+    types = sorted({i["type"] for i in described})
+    amis = sorted({i["ami"] for i in described})
+
+    total = f"{_fmt_duration(time.time() - job_started)} total · " if job_started else ""
+    build = f"build {_fmt_duration(build_seconds)} · " if build_seconds else ""
+    print("## Time and cost\n")
+    bench = _fmt_duration(bench_wall)
+    print(f"**{total}{build}bench {bench}** (first launch to last instance done)\n")
+    print(
+        f"**{'n/a' if total_cost is None else f'${total_cost:.2f}'}** for "
+        f"{len(described)} x {', '.join(types)} spot ({_fmt_duration(instance_seconds)} of "
+        f"instance time) · {settings.aws_region} · AMI {', '.join(f'`{a}`' for a in amis)}\n"
+    )
+    print("| Framework | Instance | Zone | Ran | Spot $/h | Cost |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    print("\n".join(rows))
