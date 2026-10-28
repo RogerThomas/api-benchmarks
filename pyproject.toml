@@ -11,6 +11,7 @@ dependencies = [
     "plumbum>=2.0.2",
     "matplotlib>=3.11.1",
     "msgspec>=0.19",
+    "boto3>=1.43.120",
 ]
 
 [dependency-groups]
@@ -18,6 +19,7 @@ dev = [
     "ruff>=0.11.5",
     "pyright>=1.1.390",
     "pre-commit>=4.0",
+    "types-boto3-lite[ec2,ecr]>=1.43.120",
 ]
 
 [tool.uv]

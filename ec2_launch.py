@@ -29,20 +29,30 @@ are built from it) and HEAD pushed. Every result records that commit.
     uv run yeet ./ec2_launch.py --frameworks django-bolt --run-id 20260815T070512
 """
 
+import base64
 import hashlib
 import json
 import re
 import sys
-import tempfile
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
-from typing import get_args
+from typing import TYPE_CHECKING, cast, get_args
 
-from plumbum import FG, ProcessExecutionError, local
+import boto3
+from botocore.exceptions import ClientError
+from plumbum import FG, local
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from bench import Framework
+
+if TYPE_CHECKING:
+    from types_boto3_ec2 import EC2Client
+    from types_boto3_ec2.literals import InstanceTypeType
+    from types_boto3_ec2.type_defs import InstanceTypeDef
+    from types_boto3_ecr import ECRClient
 
 
 class EC2Settings(BaseSettings):
@@ -67,6 +77,16 @@ class EC2Settings(BaseSettings):
 
     taglydb_api_key: str | None = None
     upstream_api_key: str = "upk_bench_9f8e7d6c5b4a32100fedcba987654321"
+
+
+@cache
+def _ec2(region: str) -> "EC2Client":
+    return boto3.client("ec2", region_name=region)
+
+
+@cache
+def _ecr(region: str) -> "ECRClient":
+    return boto3.client("ecr", region_name=region)
 
 
 def _pushed_commit() -> str:
@@ -149,27 +169,22 @@ def _source_key(service: str) -> str:
 def _ecr_versions(settings: EC2Settings) -> tuple[dict[str, set[str]], dict[str, str]]:
     """Every versioned image in ECR: service -> its versions, and source tag ->
     the version built from that source."""
-    out = local["aws"][
-        "ecr",
-        "describe-images",
-        "--region",
-        settings.aws_region,
-        "--repository-name",
-        settings.ec2_ecr_repo.split("/", 1)[1],
-        "--query",
-        "imageDetails[].imageTags",
-        "--output",
-        "json",
-    ]()
+    pages = (
+        _ecr(settings.aws_region)
+        .get_paginator("describe_images")
+        .paginate(repositoryName=settings.ec2_ecr_repo.split("/", 1)[1])
+    )
     versions: dict[str, set[str]] = {}
     by_source: dict[str, str] = {}
-    for tags in json.loads(out):
-        version_tags = [m for tag in tags or [] if (m := _TAG_RE.fullmatch(tag))]
-        for m in version_tags:
-            versions.setdefault(m["service"], set()).add(m["version"])
-        for tag in tags or []:
-            if _SRC_TAG_RE.fullmatch(tag) and version_tags:
-                by_source[tag] = version_tags[0]["version"]
+    for page in pages:
+        for image in page["imageDetails"]:
+            tags = image.get("imageTags", [])
+            version_tags = [m for tag in tags if (m := _TAG_RE.fullmatch(tag))]
+            for m in version_tags:
+                versions.setdefault(m["service"], set()).add(m["version"])
+            for tag in tags:
+                if _SRC_TAG_RE.fullmatch(tag) and version_tags:
+                    by_source[tag] = version_tags[0]["version"]
     return versions, by_source
 
 
@@ -220,7 +235,8 @@ def _push_changed(settings: EC2Settings, frameworks: list[str]) -> dict[str, str
         _ = docker["pull", "-q", "--platform", "linux/arm64", f"postgres@{digest}"]()
         _ = docker["tag", f"postgres@{digest}", _POSTGRES]()
 
-    password = local["aws"]["ecr", "get-login-password", "--region", settings.aws_region]()
+    auth = _ecr(settings.aws_region).get_authorization_token()["authorizationData"][0]
+    _, password = base64.b64decode(auth.get("authorizationToken", "")).decode().split(":", 1)
     registry = settings.ec2_ecr_repo.split("/")[0]
     _ = (docker["login", "--username", "AWS", "--password-stdin", registry] << password)()
     for service, src_tag in new.items():
@@ -289,52 +305,37 @@ def _launch(
         bench_args=f'{bench_args} --frameworks "{" ".join(frameworks)}" --images "{tags}"',
         images=images,
     )
-    with tempfile.NamedTemporaryFile(
-        "w", prefix="jero-user-data-", suffix=".sh", delete=False
-    ) as user_data_file:
-        user_data_file.write(user_data)
-    user_data_path = Path(user_data_file.name)
-
-    run_instances_args = [
-        "ec2",
-        "run-instances",
-        "--region",
-        settings.aws_region,
-        "--image-id",
-        settings.ec2_ami_id,
-        "--instance-type",
-        settings.ec2_instance_type,
-        "--key-name",
-        settings.ec2_key_name,
-        "--security-group-ids",
-        settings.ec2_security_group_id,
-        "--subnet-id",
-        settings.ec2_subnet_id,
-        "--iam-instance-profile",
-        f"Name={settings.ec2_iam_instance_profile}",
-        "--instance-initiated-shutdown-behavior",
-        "terminate",
-        "--user-data",
-        f"file://{user_data_path}",
-        "--tag-specifications",
-        f"ResourceType=instance,Tags=[{{Key=Name,Value={run_id}-{'-'.join(frameworks)[:200]}}}]",
-        "--query",
-        "Instances[0].InstanceId",
-        "--output",
-        "text",
+    response = _ec2(
+        settings.aws_region
+    ).run_instances(
+        ImageId=settings.ec2_ami_id,
+        InstanceType=cast("InstanceTypeType", settings.ec2_instance_type),
+        KeyName=settings.ec2_key_name,
+        SecurityGroupIds=[settings.ec2_security_group_id],
+        SubnetId=settings.ec2_subnet_id,
+        IamInstanceProfile={"Name": settings.ec2_iam_instance_profile},
+        InstanceInitiatedShutdownBehavior="terminate",
+        UserData=user_data,  # boto3 base64-encodes it
+        TagSpecifications=[
+            {
+                "ResourceType": "instance",
+                "Tags": [{"Key": "Name", "Value": f"{run_id}-{'-'.join(frameworks)[:200]}"}],
+            }
+        ],
         # Always spot. One-time (not persistent) -- matches the fire-and-forget
         # lifecycle: no auto-relaunch if AWS reclaims the capacity mid-run.
         # Capped at the on-demand price implicitly (no MaxPrice override).
-        "--instance-market-options",
-        (
-            '{"MarketType":"spot","SpotOptions":{"SpotInstanceType":"one-time",'
-            '"InstanceInterruptionBehavior":"terminate"}}'
-        ),
-    ]
-    try:
-        return local["aws"][run_instances_args]().strip()
-    finally:
-        user_data_path.unlink(missing_ok=True)
+        InstanceMarketOptions={
+            "MarketType": "spot",
+            "SpotOptions": {
+                "SpotInstanceType": "one-time",
+                "InstanceInterruptionBehavior": "terminate",
+            },
+        },
+        MinCount=1,
+        MaxCount=1,
+    )
+    return response.get("Instances", [{}])[0].get("InstanceId", "")
 
 
 def push(*, frameworks: str = "") -> None:
@@ -349,20 +350,20 @@ def _running(settings: EC2Settings, run_id: str) -> int:
     """How many of this run's instances still hold spot capacity. Counted by the
     run-id name tag, so a second launcher for the same run sees the first one's
     instances too; "shutting-down" still counts against the spot quota."""
-    out = local["aws"][
-        "ec2",
-        "describe-instances",
-        "--region",
-        settings.aws_region,
-        "--filters",
-        f"Name=tag:Name,Values={run_id}-*",
-        "Name=instance-state-name,Values=pending,running,shutting-down,stopping",
-        "--query",
-        "length(Reservations[].Instances[])",
-        "--output",
-        "text",
-    ]()
-    return int(out.strip())
+    pages = (
+        _ec2(settings.aws_region)
+        .get_paginator("describe_instances")
+        .paginate(
+            Filters=[
+                {"Name": "tag:Name", "Values": [f"{run_id}-*"]},
+                {
+                    "Name": "instance-state-name",
+                    "Values": ["pending", "running", "shutting-down", "stopping"],
+                },
+            ]
+        )
+    )
+    return sum(len(r.get("Instances", [])) for page in pages for r in page["Reservations"])
 
 
 def _launch_when_free(
@@ -390,14 +391,13 @@ def _launch_when_free(
                 frameworks=frameworks,
                 versions=versions,
             )
-        except ProcessExecutionError as exc:
-            if max_instances and "MaxSpotInstanceCountExceeded" in exc.stderr:
+        except ClientError as exc:
+            if max_instances and exc.response.get("Error", {}).get("Code") == (
+                "MaxSpotInstanceCountExceeded"
+            ):
                 time.sleep(30)  # capacity frees up as an instance finishes terminating
                 continue
-            print(
-                f"  NOT launched {' '.join(frameworks)}: {exc.stderr.strip()[-200:]}",
-                file=sys.stderr,
-            )
+            print(f"  NOT launched {' '.join(frameworks)}: {exc}", file=sys.stderr)
             return None
 
 
@@ -474,54 +474,58 @@ def main(
         raise SystemExit(1)
 
 
-def _describe(settings: EC2Settings, instance_ids: list[str]) -> list[dict[str, str]]:
-    out = local["aws"][
-        "ec2",
-        "describe-instances",
-        "--region",
-        settings.aws_region,
-        "--instance-ids",
-        *instance_ids,
-        "--query",
-        (
-            "Reservations[].Instances[].{id: InstanceId, name: Tags[?Key=='Name'] | [0].Value,"
-            " state: State.Name, launched: LaunchTime, zone: Placement.AvailabilityZone,"
-            " type: InstanceType, ami: ImageId}"
-        ),
-        "--output",
-        "json",
-    ]()
-    return json.loads(out)
+@dataclass(frozen=True, slots=True)
+class _Instance:
+    id: str
+    name: str
+    state: str
+    launched: datetime
+    zone: str
+    type: str
+    ami: str
+
+    @classmethod
+    def of(cls, inst: "InstanceTypeDef") -> "_Instance":
+        tags = {t.get("Key"): t.get("Value", "") for t in inst.get("Tags", [])}
+        return cls(
+            id=inst.get("InstanceId", ""),
+            name=tags.get("Name", ""),
+            state=inst.get("State", {}).get("Name", ""),
+            launched=inst.get("LaunchTime", datetime.now(UTC)),
+            zone=inst.get("Placement", {}).get("AvailabilityZone", ""),
+            type=str(inst.get("InstanceType", "")),
+            ami=inst.get("ImageId", ""),
+        )
 
 
-def _spot_price(settings: EC2Settings, instance: dict[str, str]) -> float | None:
+def _describe(settings: EC2Settings, instance_ids: list[str]) -> list[_Instance]:
+    pages = (
+        _ec2(settings.aws_region)
+        .get_paginator("describe_instances")
+        .paginate(InstanceIds=instance_ids)
+    )
+    return [
+        _Instance.of(inst)
+        for page in pages
+        for reservation in page["Reservations"]
+        for inst in reservation.get("Instances", [])
+    ]
+
+
+def _spot_price(settings: EC2Settings, instance: _Instance) -> float | None:
     """The spot $/hour in effect in the instance's zone when it launched."""
     try:
-        out = local["aws"][
-            "ec2",
-            "describe-spot-price-history",
-            "--region",
-            settings.aws_region,
-            "--instance-types",
-            instance["type"],
-            "--product-descriptions",
-            "Linux/UNIX",
-            "--availability-zone",
-            instance["zone"],
-            "--start-time",
-            instance["launched"],
-            "--end-time",
-            instance["launched"],
-            "--query",
-            "SpotPriceHistory[].SpotPrice",
-            "--output",
-            "json",
-        ]()
-    except ProcessExecutionError as exc:
-        print(f"no spot price: {exc.stderr.strip()[-200:]}", file=sys.stderr)
+        history = _ec2(settings.aws_region).describe_spot_price_history(
+            InstanceTypes=[cast("InstanceTypeType", instance.type)],
+            ProductDescriptions=["Linux/UNIX"],
+            AvailabilityZone=instance.zone,
+            StartTime=instance.launched,
+            EndTime=instance.launched,
+        )["SpotPriceHistory"]
+    except ClientError as exc:
+        print(f"no spot price: {exc}", file=sys.stderr)
         return None
-    prices = json.loads(out)
-    return float(prices[0]) if prices else None
+    return float(history[0].get("SpotPrice", "nan")) if history else None
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -542,10 +546,10 @@ def wait(*, run_id: str, instances: str, build_seconds: int = 0, job_started: in
         described = _describe(settings, ids)
         now = datetime.now(UTC)
         for inst in described:
-            if inst["state"] in ("shutting-down", "terminated") and inst["id"] not in ended:
-                ended[inst["id"]] = now
-                ran = (now - datetime.fromisoformat(inst["launched"])).total_seconds()
-                name = inst["name"].removeprefix(f"{run_id}-")
+            if inst.state in ("shutting-down", "terminated") and inst.id not in ended:
+                ended[inst.id] = now
+                ran = (now - inst.launched).total_seconds()
+                name = inst.name.removeprefix(f"{run_id}-")
                 print(f"[{now:%H:%M:%S}] {name} done after {_fmt_duration(ran)}", file=sys.stderr)
         if len(ended) == len(ids):
             break
@@ -554,22 +558,22 @@ def wait(*, run_id: str, instances: str, build_seconds: int = 0, job_started: in
     rows = []
     total_cost: float | None = 0.0
     instance_seconds = 0.0
-    for inst in sorted(described, key=lambda i: i["name"]):
-        ran = (ended[inst["id"]] - datetime.fromisoformat(inst["launched"])).total_seconds()
+    for inst in sorted(described, key=lambda i: i.name):
+        ran = (ended[inst.id] - inst.launched).total_seconds()
         instance_seconds += ran
         price = _spot_price(settings, inst)
         cost = None if price is None else price * ran / 3600
         total_cost = None if cost is None or total_cost is None else total_cost + cost
         rows.append(
-            f"| {inst['name'].removeprefix(f'{run_id}-')} | `{inst['id']}` | {inst['zone']} "
+            f"| {inst.name.removeprefix(f'{run_id}-')} | `{inst.id}` | {inst.zone} "
             f"| {_fmt_duration(ran)} "
             f"| {'n/a' if price is None else f'${price:.4f}'} "
             f"| {'n/a' if cost is None else f'${cost:.3f}'} |"
         )
-    first_launch = min(datetime.fromisoformat(i["launched"]) for i in described)
+    first_launch = min(i.launched for i in described)
     bench_wall = (max(ended.values()) - first_launch).total_seconds()
-    types = sorted({i["type"] for i in described})
-    amis = sorted({i["ami"] for i in described})
+    types = sorted({i.type for i in described})
+    amis = sorted({i.ami for i in described})
 
     total = f"{_fmt_duration(time.time() - job_started)} total · " if job_started else ""
     build = f"build {_fmt_duration(build_seconds)} · " if build_seconds else ""
