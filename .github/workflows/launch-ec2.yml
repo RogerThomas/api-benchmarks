@@ -1,0 +1,125 @@
+# Build, push, bench: builds every image the run needs whose source isn't in
+# ECR yet (natively, on an arm64 runner), pushes it, then starts the spot
+# instance(s) and exits. The instances run the bench and self-terminate as
+# before; results land in TaglyDB under the run id, and the job summary has the
+# command that turns them into a report.
+#
+# Images are matched by source, not rebuilt per run (see ec2_launch.py): with
+# no `tag`, a commit that didn't touch a service reuses its image, so building
+# is always right -- the images always match the commit benched.
+#
+# AWS access is the jero-api-benchmarks-ci role, assumed via OIDC (only from
+# main) -- no AWS keys anywhere. The role and the AWS_ROLE_ARN / AWS_REGION repo
+# variables are managed in ~/workspace/init (iac/live/projects/jero-api-benchmarks).
+# TAGLYDB_API_KEY is a repo secret: gh secret set TAGLYDB_API_KEY
+#
+#     gh workflow run launch-ec2                                  # everything
+#     gh workflow run launch-ec2 -f frameworks=jero -f tests="test1 test4"
+
+name: launch-ec2
+
+on:
+  workflow_dispatch:
+    inputs:
+      frameworks:
+        description: Space-separated frameworks (empty = all)
+        type: string
+        default: ""
+      tests:
+        description: Space-separated tests, e.g. "test1 test4" (empty = all)
+        type: string
+        default: ""
+      duration:
+        description: Per attempt
+        type: string
+        default: 60s
+      vus:
+        description: Concurrent connections
+        type: number
+        default: 128
+      runs:
+        description: Attempts per test (best wins)
+        type: number
+        default: 3
+      loadgen:
+        type: choice
+        options: [wrk, oha]
+        default: wrk
+      parallel:
+        description: One instance per framework (off = all on one, sequentially)
+        type: boolean
+        default: true
+      tag:
+        description: Run this exact framework image version, e.g. 2026.10.25.01 (skips the build)
+        type: string
+        default: ""
+      run_id:
+        description: Add to an existing run (backfill) instead of starting a new one
+        type: string
+        default: ""
+
+permissions:
+  id-token: write # OIDC token for the AWS role
+  contents: read
+
+# Two runs building at once could pick the same next CalVer version of an image.
+concurrency:
+  group: launch-ec2
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail
+
+jobs:
+  launch:
+    runs-on: ubuntu-24.04-arm # same arch as the c9g instances: native builds
+    timeout-minutes: 60
+    # Inputs go through env, never straight into a script (injection).
+    env:
+      TAGLYDB_API_KEY: ${{ secrets.TAGLYDB_API_KEY }}
+      FRAMEWORKS: ${{ inputs.frameworks }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # ec2_launch.py checks HEAD is on a pushed branch
+
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: astral-sh/setup-uv@v10
+
+      - name: Build and push images
+        if: inputs.tag == ''
+        run: uv run --no-dev yeet ./ec2_launch.py:push --frameworks "$FRAMEWORKS"
+
+      - name: Launch
+        env:
+          TESTS: ${{ inputs.tests }}
+          DURATION: ${{ inputs.duration }}
+          VUS: ${{ inputs.vus }}
+          RUNS: ${{ inputs.runs }}
+          LOADGEN: ${{ inputs.loadgen }}
+          PARALLEL: ${{ inputs.parallel }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          run_id=${RUN_ID:-$(date -u +%Y%m%dT%H%M%S)}
+          args=(--frameworks "$FRAMEWORKS" --tests "$TESTS" --duration "$DURATION"
+                --vus "$VUS" --runs "$RUNS" --loadgen "$LOADGEN" --run-id "$run_id"
+                --tag "$TAG")
+          if [ "$PARALLEL" = true ]; then args+=(--parallel); fi
+          uv run --no-dev yeet ./ec2_launch.py "${args[@]}" | tee launch.log
+          {
+            echo "### Run \`$run_id\`"
+            echo
+            echo "Instances self-terminate when their bench is done (~15 min). Then, locally:"
+            echo
+            echo "    uv run yeet ./export_results.py $run_id"
+            echo
+            echo '```'
+            cat launch.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

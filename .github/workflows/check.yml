@@ -1,0 +1,27 @@
+# The repo's checks (`task check`), in verify-only mode: format, lint, types,
+# definition order. `task check` itself autofixes; this fails instead.
+
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - name: format
+        run: uv run --group dev ruff format --check .
+      - name: lint
+        run: uv run --group dev ruff check --no-fix .
+      - name: typecheck
+        run: uv run --group dev pyright
+      - name: definition order
+        run: uv run yeet ./check_definition_order.py $(git ls-files '*.py' ':!:vendor/**')

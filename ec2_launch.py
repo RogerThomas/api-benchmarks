@@ -8,9 +8,12 @@ live, ./export_results.py reads the results back out once it's done.
 Images are built here and pushed to ECR (one repo), so instances pull
 ready-made images instead of compiling. Every image is versioned on its own,
 CalVer-style: `<service>-YYYY.MM.DD.NN`, e.g. `jero-2026.10.23.01` (NN counts
-up within the UTC day). A build only pushes a new version of an image that
-actually changed -- edit jero and only jero gets a new tag. Tags are immutable,
-and every result records the exact image tags it ran on.
+up within the UTC day). Each version also carries a source tag,
+`<service>-src-<hash>`, hashing the git files its image is built from: a
+service whose files already have a version in ECR isn't rebuilt at all -- edit
+jero and only jero gets a new version. That's deterministic, so a fresh CI
+runner reuses images exactly like this laptop does. Tags are immutable, and
+every result records the exact image tags it ran on.
 
 The code comes from GitHub, not from this machine: each instance downloads the
 tarball of the current commit, so the working tree must be clean (the images
@@ -21,11 +24,12 @@ are built from it) and HEAD pushed. Every result records that commit.
     uv run yeet ./ec2_launch.py --parallel --max-instances 4  # ...at most 4 at once
     uv run yeet ./ec2_launch.py --frameworks jero     # rebuild jero if changed, bench it
     uv run yeet ./ec2_launch.py --frameworks jero --tag 2026.10.23.01  # exact image, no build
-    uv run yeet ./ec2_launch.py:push --frameworks jero  # build + version changed images, no launch
+    uv run yeet ./ec2_launch.py:push --frameworks jero  # build + version new images, no launch
     # backfill django-bolt into a run an earlier launch already started:
     uv run yeet ./ec2_launch.py --frameworks django-bolt --run-id 20260815T070512
 """
 
+import hashlib
 import json
 import re
 import sys
@@ -82,14 +86,69 @@ def _pushed_commit() -> str:
 # Harness images every instance needs alongside its framework(s).
 _SHARED_IMAGES = ["postgres", "upstream", "runner"]
 _TAG_RE = re.compile(r"(?P<service>.+)-(?P<version>\d{4}\.\d{2}\.\d{2}\.\d{2})")
+_SRC_TAG_RE = re.compile(r"(?P<service>.+)-src-(?P<key>[0-9a-f]{12})")
+_POSTGRES = "postgres:18-alpine"
+# The Python frameworks share one build context (services/python); each image
+# COPYs only its own app files on top of the shared ones (see its Dockerfile).
+_PYTHON_OWN_FILES = {
+    "jero": ["apps/jero_app.py"],
+    "fastapi": ["apps/fastapi_app.py"],
+    "litestar": ["apps/litestar_app.py"],
+    "flask": ["apps/flask_app.py"],
+    "blacksheep": ["apps/blacksheep_app.py"],
+    "robyn": ["apps/robyn_app.py"],
+    "django-bolt": ["manage.py", "django_app"],
+}
 
 
 def _local_image(service: str) -> str:
-    return "postgres:18-alpine" if service == "postgres" else f"jero-benchmarks-{service}"
+    return _POSTGRES if service == "postgres" else f"jero-benchmarks-{service}"
 
 
-def _ecr_versions(settings: EC2Settings) -> dict[str, dict[str, str]]:
-    """service -> {version: manifest digest}, for every versioned tag in ECR."""
+def _git_files(*pathspecs: str) -> str:
+    """`git ls-tree` of HEAD's files under `pathspecs`: one path + blob hash per line."""
+    repo_root = Path(__file__).resolve().parent
+    return local["git"][
+        "-C", str(repo_root), "ls-tree", "-r", "--full-tree", "HEAD", "--", *pathspecs
+    ]()
+
+
+def _postgres_digest() -> str:
+    """Digest of postgres:18-alpine's current arm64 image on Docker Hub."""
+    index = json.loads(local["docker"]["buildx", "imagetools", "inspect", "--raw", _POSTGRES]())
+    for entry in index["manifests"]:
+        platform = entry.get("platform", {})
+        if (platform.get("os"), platform.get("architecture")) == ("linux", "arm64"):
+            return entry["digest"]
+    print(f"no linux/arm64 image in {_POSTGRES}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _source_key(service: str) -> str:
+    """Hash of exactly what `service`'s image is built from: its build context's
+    files at HEAD (only the ones its Dockerfile COPYs, for the shared contexts),
+    or for postgres the upstream image digest."""
+    if service == "postgres":
+        source = _postgres_digest()
+    elif service == "runner":  # repo-root context, but loadtest/Dockerfile COPYs only these
+        source = _git_files("loadtest", "vendor")
+    elif service in _PYTHON_OWN_FILES:  # all of services/python but the others' own files
+        others = tuple(
+            f"services/python/{f}"
+            for fw, files in _PYTHON_OWN_FILES.items()
+            if fw != service
+            for f in files
+        )
+        lines = _git_files("services/python").splitlines(keepends=True)
+        source = "".join(line for line in lines if not line.split("\t", 1)[1].startswith(others))
+    else:
+        source = _git_files(f"services/{service}")
+    return hashlib.sha256(source.encode()).hexdigest()[:12]
+
+
+def _ecr_versions(settings: EC2Settings) -> tuple[dict[str, set[str]], dict[str, str]]:
+    """Every versioned image in ECR: service -> its versions, and source tag ->
+    the version built from that source."""
     out = local["aws"][
         "ecr",
         "describe-images",
@@ -98,99 +157,86 @@ def _ecr_versions(settings: EC2Settings) -> dict[str, dict[str, str]]:
         "--repository-name",
         settings.ec2_ecr_repo.split("/", 1)[1],
         "--query",
-        "imageDetails[].{tags: imageTags, digest: imageDigest}",
+        "imageDetails[].imageTags",
         "--output",
         "json",
     ]()
-    versions: dict[str, dict[str, str]] = {}
-    for image in json.loads(out):
-        for tag in image["tags"] or []:
-            if m := _TAG_RE.fullmatch(tag):
-                versions.setdefault(m["service"], {})[m["version"]] = image["digest"]
-    return versions
+    versions: dict[str, set[str]] = {}
+    by_source: dict[str, str] = {}
+    for tags in json.loads(out):
+        version_tags = [m for tag in tags or [] if (m := _TAG_RE.fullmatch(tag))]
+        for m in version_tags:
+            versions.setdefault(m["service"], set()).add(m["version"])
+        for tag in tags or []:
+            if _SRC_TAG_RE.fullmatch(tag) and version_tags:
+                by_source[tag] = version_tags[0]["version"]
+    return versions, by_source
 
 
-def _image_digest(settings: EC2Settings, tag: str) -> str:
-    """Digest of the arm64 image manifest behind `tag`. Not the tag's own digest:
-    BuildKit wraps each build in an index with a fresh provenance attestation,
-    so the index digest changes on every rebuild even when the image doesn't."""
-    out = local["aws"][
-        "ecr",
-        "batch-get-image",
-        "--region",
-        settings.aws_region,
-        "--repository-name",
-        settings.ec2_ecr_repo.split("/", 1)[1],
-        "--image-ids",
-        f"imageTag={tag}",
-        "--query",
-        "images[0].[imageId.imageDigest, imageManifest]",
-        "--output",
-        "json",
-    ]()
-    digest, manifest = json.loads(out)
-    for entry in json.loads(manifest).get("manifests", []):
-        if entry.get("platform", {}).get("architecture") == "arm64":
-            return entry["digest"]
-    return digest  # a plain single-platform manifest
-
-
-def _latest(versions: dict[str, dict[str, str]], service: str) -> str | None:
-    known = versions.get(service, {})
+def _latest(versions: dict[str, set[str]], service: str) -> str | None:
+    known = versions.get(service, set())
     return max(known, key=lambda v: tuple(map(int, v.split(".")))) if known else None
 
 
-def _next_version(versions: dict[str, dict[str, str]], service: str) -> str:
+def _next_version(versions: dict[str, set[str]], service: str) -> str:
     today = datetime.now(UTC).strftime("%Y.%m.%d")
-    taken = [int(v.rsplit(".", 1)[1]) for v in versions.get(service, {}) if v.startswith(today)]
+    taken = [int(v.rsplit(".", 1)[1]) for v in versions.get(service, set()) if v.startswith(today)]
     return f"{today}.{max(taken, default=0) + 1:02d}"
 
 
 def _push_changed(settings: EC2Settings, frameworks: list[str]) -> dict[str, str]:
-    """Build the images these frameworks need, then push a new version of each
-    one that differs from its latest version in ECR; return service -> version
-    for everything the run will use (new or reused)."""
+    """Reuse the ECR version of every image these frameworks need whose source
+    is unchanged; build and push a new version of the rest. Returns service ->
+    version for everything the run will use."""
+    versions, by_source = _ecr_versions(settings)
+    chosen: dict[str, str] = {}
+    new: dict[str, str] = {}  # service -> source tag
+    for service in [*_SHARED_IMAGES, *frameworks]:
+        src_tag = f"{service}-src-{_source_key(service)}"
+        if src_tag in by_source:
+            chosen[service] = by_source[src_tag]
+            print(f"  {service}-{chosen[service]} (unchanged, {src_tag})")
+        else:
+            new[service] = src_tag
+    if not new:
+        return chosen
+
     repo_root = Path(__file__).resolve().parent
-    compose_args = ["compose", "-f", "compose.base.yml"]
-    for fw in frameworks:
-        compose_args += ["-f", f"compose.{fw}.yml"]
     docker = local["docker"]
-    with local.cwd(repo_root), local.env(RUN_ID="build"):
-        _ = docker[(*compose_args, "build")] & FG
-    _ = docker["pull", "-q", "postgres:18-alpine"]()
+    to_build = [svc for svc in new if svc != "postgres"]
+    if to_build:
+        compose_args = ["compose", "-f", "compose.base.yml"]
+        for fw in frameworks:
+            compose_args += ["-f", f"compose.{fw}.yml"]
+        # The project name sets the image names (jero-benchmarks-<service>); pinned
+        # because it otherwise comes from the checkout's directory name.
+        with (
+            local.cwd(repo_root),
+            local.env(RUN_ID="build", COMPOSE_PROJECT_NAME="jero-benchmarks"),
+        ):
+            _ = docker[(*compose_args, "build", *to_build)] & FG
+    if "postgres" in new:
+        digest = _postgres_digest()
+        _ = docker["pull", "-q", "--platform", "linux/arm64", f"postgres@{digest}"]()
+        _ = docker["tag", f"postgres@{digest}", _POSTGRES]()
+
     password = local["aws"]["ecr", "get-login-password", "--region", settings.aws_region]()
     registry = settings.ec2_ecr_repo.split("/")[0]
     _ = (docker["login", "--username", "AWS", "--password-stdin", registry] << password)()
-
-    versions = _ecr_versions(settings)
-    chosen: dict[str, str] = {}
-    for service in [*_SHARED_IMAGES, *frameworks]:
-        local_digest = docker[
-            "image",
-            "inspect",
-            "--platform",
-            "linux/arm64",
-            "--format",
-            "{{.Descriptor.digest}}",
-            _local_image(service),
-        ]().strip()
-        latest = _latest(versions, service)
-        if latest and _image_digest(settings, f"{service}-{latest}") == local_digest:
-            chosen[service] = latest
-            print(f"  {service}-{latest} (unchanged)")
-            continue
+    for service, src_tag in new.items():
         version = _next_version(versions, service)
-        ref = f"{settings.ec2_ecr_repo}:{service}-{version}"
-        _ = docker["tag", _local_image(service), ref]()
-        print(f"  pushing {service}-{version}")
-        _ = docker["push", "-q", ref]()
+        print(f"  pushing {service}-{version} ({src_tag})")
+        for tag in (f"{service}-{version}", src_tag):
+            ref = f"{settings.ec2_ecr_repo}:{tag}"
+            _ = docker["tag", _local_image(service), ref]()
+            _ = docker["push", "-q", ref]()
         chosen[service] = version
     return chosen
 
 
 def _existing(settings: EC2Settings, frameworks: list[str], tag: str) -> dict[str, str]:
     """No build: `tag` for every framework, the latest version of each shared image."""
-    versions = _ecr_versions(settings)
+    versions, _ = _ecr_versions(settings)
     chosen = {}
     for service in _SHARED_IMAGES:
         if (latest := _latest(versions, service)) is None:
@@ -293,6 +339,7 @@ def _launch(
 
 def push(*, frameworks: str = "") -> None:
     """Build and push a new version of every changed image; launch nothing."""
+    _ = _pushed_commit()  # source tags hash HEAD, so the build must be HEAD too
     fw_list = frameworks.split() or list(get_args(Framework.__value__))
     versions = _push_changed(EC2Settings(), fw_list)
     print(" ".join(f"{svc}-{ver}" for svc, ver in versions.items()))
@@ -424,3 +471,4 @@ def main(
             f'--run-id {run_id} --frameworks "{" ".join(not_launched)}" ...',
             file=sys.stderr,
         )
+        raise SystemExit(1)
