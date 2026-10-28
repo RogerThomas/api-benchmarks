@@ -111,7 +111,8 @@ jobs:
                 --vus "$VUS" --runs "$RUNS" --loadgen "$LOADGEN" --run-id "$run_id"
                 --tag "$TAG")
           if [ "$PARALLEL" = true ]; then args+=(--parallel); fi
-          uv run --no-dev yeet ./ec2_launch.py "${args[@]}" | tee launch.log
+          # The log goes outside the checkout: ec2_launch.py refuses a dirty tree.
+          uv run --no-dev yeet ./ec2_launch.py "${args[@]}" | tee "$RUNNER_TEMP/launch.log"
           {
             echo "### Run \`$run_id\`"
             echo
@@ -120,6 +121,6 @@ jobs:
             echo "    uv run yeet ./export_results.py $run_id"
             echo
             echo '```'
-            cat launch.log
+            cat "$RUNNER_TEMP/launch.log"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
