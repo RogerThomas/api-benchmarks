@@ -11,15 +11,19 @@ export_results.py's no-run-id case.
 """
 
 import contextlib
-import json
 import sys
 from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import boto3
 from plumbum import local
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from rich.console import Console
 from rich.table import Table
+
+if TYPE_CHECKING:
+    from types_boto3_ec2 import EC2Client
 
 
 class EC2Settings(BaseSettings):
@@ -40,25 +44,24 @@ def _get_settings() -> EC2Settings:
 
 
 def _describe_instances(settings: EC2Settings, *, instance_id: str = "") -> list[dict[str, str]]:
-    args = [
-        "ec2",
-        "describe-instances",
-        "--region",
-        settings.aws_region,
-        "--filters",
-        f"Name=instance.group-id,Values={settings.ec2_security_group_id}",
-        "--query",
-        (
-            "Reservations[].Instances[].{Id:InstanceId,Name:Tags[?Key=='Name']|[0].Value,"
-            "State:State.Name,Launch:LaunchTime,IP:PublicIpAddress}"
-        ),
-        "--output",
-        "json",
-    ]
-    if instance_id:
-        args += ["--instance-ids", instance_id]
-    out = local["aws"][args]()
-    instances = json.loads(out)
+    ec2: EC2Client = boto3.client("ec2", region_name=settings.aws_region)
+    pages = ec2.get_paginator("describe_instances").paginate(
+        Filters=[{"Name": "instance.group-id", "Values": [settings.ec2_security_group_id]}],
+        InstanceIds=[instance_id] if instance_id else [],
+    )
+    instances = []
+    for page in pages:
+        for reservation in page["Reservations"]:
+            for inst in reservation.get("Instances", []):
+                tags = {t.get("Key"): t.get("Value", "") for t in inst.get("Tags", [])}
+                launched = inst.get("LaunchTime")
+                instances.append({
+                    "Id": inst.get("InstanceId", ""),
+                    "Name": tags.get("Name", ""),
+                    "State": inst.get("State", {}).get("Name", ""),
+                    "Launch": launched.isoformat() if launched else "",
+                    "IP": inst.get("PublicIpAddress", ""),
+                })
     if not instance_id:
         instances = [i for i in instances if i["State"] == "running"]
     return instances
