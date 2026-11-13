@@ -36,7 +36,7 @@ jero = [
     "peregrine-server[uvloop]",
     "uvloop>=0.23.0",
     "ryjwt[msgspec]>=0.3.1",
-    "lothc[msgspec]>=0.2.3",
+    "lothc[msgspec]>=0.3.0",
     "fastpg>=0.2.2",
     "jero>=0.4.0",
 ]
@@ -45,7 +45,7 @@ fastapi = [
     "peregrine-server[uvloop]",
     "uvloop>=0.23.0",
     "ryjwt>=0.3.1",
-    "lothc[pydantic]>=0.2.3",
+    "lothc[pydantic]>=0.3.0",
     "fastpg[pydantic]>=0.2.2",
     "pydantic",
 ]
@@ -54,14 +54,14 @@ litestar = [
     "peregrine-server[uvloop]",
     "uvloop>=0.23.0",
     "ryjwt>=0.3.1",
-    "lothc[msgspec]>=0.2.3",
+    "lothc[msgspec]>=0.3.0",
     "fastpg>=0.2.2",
 ]
 flask = [
     "flask",
     "peregrine-server",
     "ryjwt>=0.3.1",
-    "lothc[pydantic]>=0.2.3",
+    "lothc[pydantic]>=0.3.0",
     "psycopg[binary,pool]",
     "pydantic",
 ]
@@ -70,16 +70,16 @@ blacksheep = [
     "peregrine-server[uvloop]",
     "uvloop>=0.23.0",
     "ryjwt>=0.3.1",
-    "lothc[pydantic]>=0.2.3",
+    "lothc[pydantic]>=0.3.0",
     "fastpg[pydantic]>=0.2.2",
     "pydantic",
 ]
-robyn = ["robyn", "ryjwt>=0.3.1", "lothc[pydantic]>=0.2.3", "fastpg[pydantic]>=0.2.2", "pydantic"]
+robyn = ["robyn", "ryjwt>=0.3.1", "lothc[pydantic]>=0.3.0", "fastpg[pydantic]>=0.2.2", "pydantic"]
 django-bolt = [
     "django>=5.2",
     "django-bolt",
     "msgspec",
     "ryjwt>=0.3.1",
-    "lothc>=0.2.3",
+    "lothc>=0.3.0",
     "fastpg>=0.2.2",
 ]

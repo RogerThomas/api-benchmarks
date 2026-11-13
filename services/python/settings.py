@@ -38,10 +38,9 @@ class Settings:
         """The one lothc client config every Python framework uses, so test 3
         differs only in the framework. `max_connections` caps requests in
         flight; any beyond it wait for a free slot (like Gin's MaxConnsPerHost).
-        `native` selects lothc's own transport (>= 0.2.3) over pyreqwest's --
-        roughly twice as fast, and only available opt-in."""
+        lothc >= 0.3.0 picks its native transport by default (`native="auto"`:
+        Linux, no http2), so there's nothing to set for it here."""
         return {
-            "native": True,
             "base_url": self.upstream_url,
             "bearer_token": self.upstream_api_key,
             "max_connections": self.http_pool_size,
