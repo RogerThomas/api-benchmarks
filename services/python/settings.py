@@ -37,7 +37,9 @@ class Settings:
     def upstream_client_options(self) -> dict[str, Any]:
         """The one lothc client config every Python framework uses, so test 3
         differs only in the framework. `max_connections` caps requests in
-        flight; any beyond it wait for a free slot (like Gin's MaxConnsPerHost)."""
+        flight; any beyond it wait for a free slot (like Gin's MaxConnsPerHost).
+        lothc >= 0.3.0 picks its native transport by default (`native="auto"`:
+        Linux, no http2), so there's nothing to set for it here."""
         return {
             "base_url": self.upstream_url,
             "bearer_token": self.upstream_api_key,
