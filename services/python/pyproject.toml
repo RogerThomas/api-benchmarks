@@ -9,6 +9,21 @@ dependencies = []
 # Not a package — just a home for per-framework dependency groups installed into
 # isolated venvs (one per Dockerfile stage).
 package = false
+# The groups never share a venv (see below), so tell uv they're mutually
+# exclusive: each then resolves on its own, and one framework's caps can't hold
+# back the rest (robyn 0.88.0 pins uvloop<0.23, which would otherwise keep every
+# peregrine[uvloop] app on the old uvloop too).
+conflicts = [
+    [
+        { group = "jero" },
+        { group = "fastapi" },
+        { group = "litestar" },
+        { group = "flask" },
+        { group = "blacksheep" },
+        { group = "robyn" },
+        { group = "django-bolt" },
+    ],
+]
 
 [tool.uv.sources]
 # robyn publishes no cp314 wheels (and no sdist), so build its release tag from source.
@@ -19,48 +34,52 @@ robyn = { url = "https://github.com/sparckles/Robyn/archive/refs/tags/v0.88.0.ta
 [dependency-groups]
 jero = [
     "peregrine-server[uvloop]",
-    "ryjwt[msgspec]",
-    "lothc[msgspec]",
-    "fastpg",
-    "jero>=0.0.27",
+    "uvloop>=0.23.0",
+    "ryjwt[msgspec]>=0.3.1",
+    "lothc[msgspec]>=0.2.3",
+    "fastpg>=0.2.2",
+    "jero>=0.4.0",
 ]
 fastapi = [
     "fastapi",
     "peregrine-server[uvloop]",
-    "ryjwt",
-    "lothc[pydantic]",
-    "fastpg[pydantic]",
+    "uvloop>=0.23.0",
+    "ryjwt>=0.3.1",
+    "lothc[pydantic]>=0.2.3",
+    "fastpg[pydantic]>=0.2.2",
     "pydantic",
 ]
 litestar = [
     "litestar",
     "peregrine-server[uvloop]",
-    "ryjwt",
-    "lothc[msgspec]",
-    "fastpg",
+    "uvloop>=0.23.0",
+    "ryjwt>=0.3.1",
+    "lothc[msgspec]>=0.2.3",
+    "fastpg>=0.2.2",
 ]
 flask = [
     "flask",
     "peregrine-server",
-    "ryjwt",
-    "lothc[pydantic]",
+    "ryjwt>=0.3.1",
+    "lothc[pydantic]>=0.2.3",
     "psycopg[binary,pool]",
     "pydantic",
 ]
 blacksheep = [
     "blacksheep",
     "peregrine-server[uvloop]",
-    "ryjwt",
-    "lothc[pydantic]",
-    "fastpg[pydantic]",
+    "uvloop>=0.23.0",
+    "ryjwt>=0.3.1",
+    "lothc[pydantic]>=0.2.3",
+    "fastpg[pydantic]>=0.2.2",
     "pydantic",
 ]
-robyn = ["robyn", "ryjwt", "lothc[pydantic]", "fastpg[pydantic]", "pydantic"]
+robyn = ["robyn", "ryjwt>=0.3.1", "lothc[pydantic]>=0.2.3", "fastpg[pydantic]>=0.2.2", "pydantic"]
 django-bolt = [
     "django>=5.2",
     "django-bolt",
     "msgspec",
-    "ryjwt",
-    "lothc",
-    "fastpg",
+    "ryjwt>=0.3.1",
+    "lothc>=0.2.3",
+    "fastpg>=0.2.2",
 ]
